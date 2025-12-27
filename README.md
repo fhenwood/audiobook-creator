@@ -21,7 +21,7 @@ Convert ebooks (EPUB, PDF, TXT) into high-quality audiobooks with expressive AI 
 ### Prerequisites
 - Docker & Docker Compose
 - ~20GB disk space for models
-- NVIDIA GPU (optional, for faster generation)
+- NVIDIA GPU + [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (optional, for faster generation)
 
 ### Installation
 
@@ -33,19 +33,31 @@ cp .env_sample .env
 
 ### Run with GPU (Recommended)
 
+For **NVIDIA GPU** users (10-50x faster generation):
+
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up --build
+# Start all services with GPU acceleration
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+
+# View logs (optional)
+docker compose logs -f audiobook_creator
 ```
+
+> **Note:** Make sure `GPU_LAYERS=99` is set in your `.env` file for full GPU offloading.
 
 ### Run with CPU Only
 
+For CPU-only systems:
+
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.cpu.yaml up --build
+docker compose -f docker-compose.yaml -f docker-compose.cpu.yaml up -d
 ```
+
+### Access the Web UI
 
 Open **http://localhost:7860** in your browser.
 
-> ⏳ First run downloads models (~15GB for Orpheus+LLM, +3GB for Chatterbox on first use)
+> ⏳ **First run:** Models download automatically (~15GB for Orpheus+LLM). Chatterbox downloads an additional ~3GB on first use.
 
 ## 📖 Usage
 
@@ -264,18 +276,23 @@ Change `ORPHEUS_MODEL_NAME` in `.env` for other languages:
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    docker compose up                             │
-├─────────────────────────────────┬───────────────┬───────────────┤
-│         audiobook_creator       │ orpheus_llama │ llm_server    │
-│        (Web UI + TTS API)       │ (TTS Tokens)  │ (GPT-OSS)     │
-│         :7860 + :8880           │ :5006         │ :8000         │
-│                                 │               │               │
-│  - Gradio Web UI (:7860)        │ - llama.cpp   │ - llama.cpp   │
-│  - Orpheus TTS API (:8880)      │ - GGUF model  │ - GGUF model  │
-│  - Chatterbox voice cloning     │               │               │
-│  - SNAC audio codec             │               │               │
-└─────────────────────────────────┴───────────────┴───────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│     docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml│
+├───────────────────────────────────┬───────────────┬─────────────────┤
+│         audiobook_creator         │ orpheus_llama │   llm_server    │
+│    (Web UI + TTS Engines)         │ (TTS Tokens)  │   (GPT-OSS)     │
+│        :7860 + :8880              │    :5006      │     :8000       │
+│                                   │               │                 │
+│  ┌─ Gradio Web UI (:7860)         │ - llama.cpp   │ - llama.cpp     │
+│  ├─ Orpheus TTS API (:8880)       │ - GGUF model  │ - GGUF model    │
+│  ├─ Chatterbox (voice cloning)    │ - GPU/CPU     │ - GPU/CPU       │
+│  └─ SNAC audio codec              │               │                 │
+└───────────────────────────────────┴───────────────┴─────────────────┘
+
+Services:
+• audiobook_creator - Main app with Gradio UI, Orpheus TTS API, and Chatterbox
+• orpheus_llama     - llama.cpp server for Orpheus token generation  
+• llm_server        - llama.cpp server for emotion tag generation (GPT-OSS-20B)
 ```
 
 ## 💻 Hardware Requirements
@@ -301,20 +318,23 @@ Change `ORPHEUS_MODEL_NAME` in `.env` for other languages:
 
 ```bash
 # All services
-docker compose logs -f
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml logs -f
 
 # Specific service
-docker compose logs -f audiobook_creator
-docker compose logs -f orpheus_tts
-docker compose logs -f llm_server
+docker compose logs -f audiobook_creator   # Web UI + Orpheus TTS API + Chatterbox
+docker compose logs -f orpheus_llama        # Orpheus token generation (llama.cpp)
+docker compose logs -f llm_server           # Emotion tags LLM (GPT-OSS)
 ```
 
 ### Reset Models
 
 ```bash
-# Remove all cached models and start fresh
-docker compose down -v
-docker compose up --build
+# Stop all services
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml down
+
+# Remove cached models and rebuild from scratch
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml down -v
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up --build -d
 ```
 
 ### Common Issues
@@ -323,9 +343,18 @@ docker compose up --build
 
 **Out of VRAM** - Reduce `GPU_LAYERS` in `.env` or use CPU mode.
 
-**Slow generation** - Enable GPU with `docker-compose.gpu.yaml` or reduce model quality.
+**Slow generation / Running on CPU** - Make sure you started with both compose files:
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+```
+Verify GPU is available inside the container:
+```bash
+docker exec audiobook-creator-audiobook_creator-1 python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+```
 
 **Text extraction fails** - Ensure book file isn't DRM-protected.
+
+**"GPU: No" in logs** - Container started without GPU override. Restart with `-f docker-compose.gpu.yaml`.
 
 ## 📁 Project Structure
 
