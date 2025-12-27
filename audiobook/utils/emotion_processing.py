@@ -1,6 +1,5 @@
 """
 Audiobook Creator
-Copyright (C) 2025 Prakhar Sharma
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -366,22 +365,71 @@ def postprocess_emotion_tags(enhanced_text, original_text):
         # Remove all emotion tags to compare core content
         text_without_tags = re.sub(r'<(?:laugh|chuckle|sigh|cough|sniffle|groan|yawn|gasp)>', '', cleaned_text)
         
-        # Remove ALL whitespace for content comparison - we only care about actual words/characters
-        def remove_all_whitespace(text):
+        # Normalize text for comparison - handle common LLM modifications
+        def normalize_for_comparison(text):
+            """
+            Normalize text for lenient comparison. LLMs commonly change:
+            - Quote styles (curly ↔ straight quotes)
+            - Apostrophe styles
+            - Em-dashes vs hyphens
+            - Ellipsis characters
+            - Minor whitespace differences
+            """
+            # Normalize quotes - both curly and straight to standard
+            text = text.replace('"', '"').replace('"', '"')  # Curly double quotes to straight
+            text = text.replace(''', "'").replace(''', "'")  # Curly single quotes to straight
+            text = text.replace('`', "'")  # Backtick to apostrophe
+            
+            # Normalize dashes
+            text = text.replace('—', '-').replace('–', '-')  # Em/en dash to hyphen
+            
+            # Normalize ellipsis
+            text = text.replace('…', '...')
+            
+            # Remove all whitespace for final comparison
             return re.sub(r'\s+', '', text)
         
-        text_content_only = remove_all_whitespace(text_without_tags)
-        original_content_only = remove_all_whitespace(original_text)
+        text_content_only = normalize_for_comparison(text_without_tags)
+        original_content_only = normalize_for_comparison(original_text)
         
         if text_content_only != original_content_only:
-            reason = f"Text content was modified beyond adding tags."
-            print(f"Warning: {reason}. Reverting to original text.")
-            return {
-                'text': original_text,
-                'success': False,
-                'reverted': True,
-                'reason': reason
-            }
+            # Calculate similarity to provide better debugging info
+            # Use simple character-level similarity
+            shorter_len = min(len(text_content_only), len(original_content_only))
+            longer_len = max(len(text_content_only), len(original_content_only))
+            
+            if longer_len > 0:
+                # Count matching characters at same positions
+                matches = sum(1 for a, b in zip(text_content_only, original_content_only) if a == b)
+                similarity = matches / longer_len
+                
+                # Allow up to 2% character difference (for very minor changes)
+                if similarity >= 0.98:
+                    print(f"Info: Minor text differences detected ({similarity:.1%} similar), accepting result")
+                else:
+                    reason = f"Text content was modified beyond adding tags (similarity: {similarity:.1%})."
+                    print(f"Warning: {reason}. Reverting to original text.")
+                    # Debug: show first difference
+                    for i, (a, b) in enumerate(zip(text_content_only[:200], original_content_only[:200])):
+                        if a != b:
+                            print(f"  First diff at position {i}: got '{a}' expected '{b}'")
+                            print(f"  Context: ...{text_content_only[max(0,i-10):i+10]}...")
+                            break
+                    return {
+                        'text': original_text,
+                        'success': False,
+                        'reverted': True,
+                        'reason': reason
+                    }
+            else:
+                reason = f"Text content was modified beyond adding tags."
+                print(f"Warning: {reason}. Reverting to original text.")
+                return {
+                    'text': original_text,
+                    'success': False,
+                    'reverted': True,
+                    'reason': reason
+                }
         
         # 4. Check if line breaks/newlines were preserved
         original_lines = original_text.split('\n')
@@ -1003,7 +1051,9 @@ async def add_tags_to_text_chunks(text_to_process):
         
         results[chunk_index] = chunk_result
         
-        yield f"Processed {current_progress}/{total_chunks} emotion tag chunks..."
+        progress_msg = f"Processed {current_progress}/{total_chunks} emotion tag chunks..."
+        print(f"📈 {progress_msg}")  # Explicit logging
+        yield progress_msg
     
     yield f"Completed processing all {total_chunks} emotion tag chunks"
 
