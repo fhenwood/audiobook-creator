@@ -1,0 +1,22 @@
+# Orpheus TTS Requirements
+# Based on Lex-au/Orpheus-FastAPI (Apache 2.0 License)
+
+# Web Server
+fastapi==0.103.1
+uvicorn==0.23.2
+pydantic==2.3.0
+
+# API and Communication
+requests==2.31.0
+python-dotenv==1.0.0
+
+# Audio Processing
+numpy==1.24.0
+sounddevice==0.4.6
+snac==1.2.1
+
+# System Utilities
+psutil==5.9.0
+
+# PyTorch - Install separately with CUDA support:
+# pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124

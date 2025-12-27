@@ -3,6 +3,7 @@ books/
 generated_audiobooks/
 model_cache/
 audio_samples/
+voice_samples/
 temp_audio/
 todo.md
 .venv/

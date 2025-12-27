@@ -22,24 +22,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TTS_MODEL = os.environ.get("TTS_MODEL", "kokoro")
-
 async def check_if_audio_generator_api_is_up(client):
+    """Check if Orpheus TTS API is accessible and working."""
     try:
-        voice = None
-        if TTS_MODEL == "kokoro":
-            voice = "af_heart"
-        elif TTS_MODEL == "orpheus":
-            voice = "tara"
         async with client.audio.speech.with_streaming_response.create(
-            model=TTS_MODEL,
-            voice=voice,
-            response_format="wav",  # Changed to WAV for consistency
+            model="orpheus",
+            voice="tara",
+            response_format="wav",
             speed=0.85,
-            input="Hello, how are you ?",
-            timeout=600
+            input="Hello, how are you?",
+            timeout=120
         ) as response:
             return True, None
     except Exception as e:
         traceback.print_exc()
-        return False, f"The {TTS_MODEL.upper()} API is not working. Please check if the .env file is correctly set up and the {TTS_MODEL.upper()} API is up. Error: " + str(e)
+        return False, f"The Orpheus TTS API is not working. Please check if the TTS service is running and the .env file is correctly configured. Error: " + str(e)

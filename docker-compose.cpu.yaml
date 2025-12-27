@@ -1,0 +1,24 @@
+# ============================================================================
+# CPU-Only Override for Audiobook Creator
+# ============================================================================
+# Use this if you don't have a GPU or want to force CPU mode.
+#
+# Usage: docker compose -f docker-compose.yaml -f docker-compose.cpu.yaml up --build
+#
+# Or simply set FORCE_CPU=true in .env to achieve the same effect.
+# ============================================================================
+
+services:
+  orpheus_llama:
+    environment:
+      - LLAMA_ARG_N_GPU_LAYERS=0
+    deploy: {}  # Remove GPU reservation
+
+  llm_server:
+    environment:
+      - LLAMA_ARG_N_GPU_LAYERS=0
+    deploy: {}  # Remove GPU reservation
+
+  orpheus_tts:
+    environment:
+      - FORCE_CPU=true

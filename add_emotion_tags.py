@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TTS_MODEL = os.environ.get("TTS_MODEL", "kokoro")
+TTS_MODEL = os.environ.get("TTS_MODEL", "orpheus")
 
 async def process_emotion_tags(characters_identified):
     """

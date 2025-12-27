@@ -27,7 +27,7 @@ load_dotenv()
 
 TTS_BASE_URL = os.environ.get("TTS_BASE_URL", "http://localhost:8880/v1")
 TTS_API_KEY = os.environ.get("TTS_API_KEY", "not-needed")
-TTS_MODEL = os.environ.get("TTS_MODEL", "kokoro")
+TTS_MODEL = os.environ.get("TTS_MODEL", "orpheus")
 
 os.makedirs("audio_samples", exist_ok=True)
 

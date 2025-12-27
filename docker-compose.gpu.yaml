@@ -1,0 +1,40 @@
+# ============================================================================
+# GPU Override for Audiobook Creator (NVIDIA only)
+# ============================================================================
+# Usage: docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up
+#
+# This enables NVIDIA GPU for llama.cpp services and uses the CUDA image.
+# Requires: NVIDIA GPU + nvidia-container-toolkit
+#
+# Also set GPU_LAYERS=99 in your .env file!
+# ============================================================================
+
+services:
+  orpheus_llama:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  llm_server:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  orpheus_tts:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

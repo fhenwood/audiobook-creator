@@ -28,11 +28,12 @@ import tiktoken
 
 load_dotenv()
 
-EMOTION_TAG_ADDITION_LLM_BASE_URL=os.environ.get("EMOTION_TAG_ADDITION_LLM_BASE_URL", "http://localhost:1234/v1")
-EMOTION_TAG_ADDITION_LLM_API_KEY=os.environ.get("EMOTION_TAG_ADDITION_LLM_API_KEY", "lm-studio")
-EMOTION_TAG_ADDITION_LLM_MODEL_NAME=os.environ.get("EMOTION_TAG_ADDITION_LLM_MODEL_NAME", "openai/gpt-oss-20b")
+# Unified LLM configuration (used for both character identification and emotion tags)
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "not-needed")
+LLM_MODEL_NAME = os.environ.get("LLM_MODEL_NAME", "gpt-oss-20b")
 NO_THINK_MODE = os.environ.get("NO_THINK_MODE", "true")
-EMOTION_TAG_ADDITION_LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE = int(os.environ.get("EMOTION_TAG_ADDITION_LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE", 1))
+LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE = int(os.environ.get("LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE", 1))
 MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "500"))  # Max tokens per chunk for emotion processing
 EMOTION_CONTEXT_WINDOW_SIZE = int(os.environ.get("EMOTION_CONTEXT_WINDOW_SIZE", "2"))  # Number of lines before/after emotion keyword
 
@@ -69,8 +70,8 @@ def count_tokens(text: str) -> int:
     except Exception:
         return 0
 
-openai_llm_client = AsyncOpenAI(base_url=EMOTION_TAG_ADDITION_LLM_BASE_URL, api_key=EMOTION_TAG_ADDITION_LLM_API_KEY)
-model_name = EMOTION_TAG_ADDITION_LLM_MODEL_NAME
+openai_llm_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+model_name = LLM_MODEL_NAME
 
 def join_lines_to_paragraphs(text):
     """
@@ -956,7 +957,7 @@ async def add_tags_to_text_chunks(text_to_process):
 
     # Create shared semaphore to control total concurrent LLM requests
     # This ensures concurrency limit is respected across both chunk and line-by-line processing
-    semaphore = asyncio.Semaphore(EMOTION_TAG_ADDITION_LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE)
+    semaphore = asyncio.Semaphore(LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE)
     progress_counter = 0
     total_chunks = len(chunks)
 
@@ -984,7 +985,7 @@ async def add_tags_to_text_chunks(text_to_process):
             "progress": progress_counter
         }
 
-    yield f"Processing {total_chunks} chunks for emotion tags (max {EMOTION_TAG_ADDITION_LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE} concurrent)..."
+    yield f"Processing {total_chunks} chunks for emotion tags (max {LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE} concurrent)..."
     
     # Create tasks with chunk indices
     tasks = []

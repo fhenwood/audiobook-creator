@@ -19,17 +19,28 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import gradio as gr
 import os
 import traceback
+import tempfile
 from fastapi import FastAPI
+from openai import OpenAI
 from book_to_txt import process_book_and_extract_text, save_book
 from identify_characters_and_output_book_to_jsonl import process_book_and_identify_characters
 from generate_audiobook import process_audiobook_generation, validate_book_for_m4b_generation, sanitize_filename
 from add_emotion_tags import process_emotion_tags
+from utils.voice_mapping import get_available_voices, get_voice_list
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# TTS Configuration
+TTS_BASE_URL = os.environ.get("TTS_BASE_URL", "http://localhost:8880/v1")
+TTS_API_KEY = os.environ.get("TTS_API_KEY", "not-needed")
+
+# Create voice samples directory
+os.makedirs("static_files/voice_samples", exist_ok=True)
+
 css = """
 .step-heading {font-size: 1.2rem; font-weight: bold; margin-bottom: 0.5rem}
+.voice-card {border: 1px solid #ddd; padding: 10px; margin: 5px; border-radius: 8px;}
 """
 
 app = FastAPI()
@@ -112,16 +123,9 @@ async def identify_characters_wrapper():
 async def add_emotion_tags_wrapper(characters_identified_state):
     """Wrapper for emotion tags processing with validation and progress updates"""
 
-    # Check if TTS engine supports emotion tags
-    current_tts_engine = os.environ.get("TTS_MODEL", "kokoro").lower()
-    if current_tts_engine != "orpheus":
-        yield gr.Warning(f"Emotion tags are only supported with Orpheus TTS engine. Current engine: {current_tts_engine}")
-        yield None
-        return
-
     try:
         last_output = None
-        # Use the unified emotion tags processing function (voice-agnostic)
+        # Use the unified emotion tags processing function (Orpheus TTS only)
         async for output in process_emotion_tags(characters_identified_state):
             last_output = output
             yield output
@@ -137,14 +141,14 @@ async def add_emotion_tags_wrapper(characters_identified_state):
         yield None
         return
 
-async def generate_audiobook_wrapper(voice_type, narrator_gender, output_format, book_file, emotion_tags_processed_state, book_title):
+async def generate_audiobook_wrapper(narrator_gender, output_format, book_file, emotion_tags_processed_state, book_title):
     """Wrapper for audiobook generation with validation and progress updates"""
     if book_file is None:
         yield gr.Warning("Please upload a book file first."), None
         yield None, None
         return
-    if not voice_type or not output_format:
-        yield gr.Warning("Please select voice type and output format."), None
+    if not output_format:
+        yield gr.Warning("Please select an output format."), None
         yield None, None
         return
     
@@ -171,8 +175,8 @@ async def generate_audiobook_wrapper(voice_type, narrator_gender, output_format,
     try:
         last_output = None
         audiobook_path = None
-        # Pass through all yield values from the original function
-        async for output in process_audiobook_generation(voice_type, narrator_gender, output_format, book_file, add_emotion_tags):
+        # Pass through all yield values from the original function (voice_type is ignored, always single voice)
+        async for output in process_audiobook_generation("Single Voice", narrator_gender, output_format, book_file, add_emotion_tags):
             last_output = output
             yield output, None  # Yield each progress update without file path
         
@@ -207,9 +211,43 @@ def update_characters_identified_state():
     """Set characters_identified state to True after character identification"""
     return True
 
+def generate_voice_sample(voice_name, sample_text):
+    """Generate a voice sample for the selected voice with custom text."""
+    if not sample_text or not sample_text.strip():
+        return None, "Please enter some text to generate a sample."
+    
+    if not voice_name:
+        return None, "Please select a voice."
+    
+    try:
+        client = OpenAI(base_url=TTS_BASE_URL, api_key=TTS_API_KEY)
+        
+        # Generate audio sample
+        with client.audio.speech.with_streaming_response.create(
+            model="orpheus",
+            voice=voice_name,
+            response_format="wav",
+            speed=0.85,
+            input=sample_text.strip(),
+            timeout=120
+        ) as response:
+            # Save to temp file
+            sample_path = f"static_files/voice_samples/{voice_name}_sample.wav"
+            response.stream_to_file(sample_path)
+            
+        return sample_path, f"✅ Generated sample for voice: {voice_name}"
+    except Exception as e:
+        traceback.print_exc()
+        return None, f"❌ Error generating sample: {str(e)}"
+
+def get_voice_choices():
+    """Get voice choices for dropdown with descriptions."""
+    voices = get_available_voices()
+    return [(f"{name} - {desc}", name) for name, desc in voices.items()]
+
 with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     gr.Markdown("# 📖 Audiobook Creator")
-    gr.Markdown("Create professional audiobooks from your ebooks in just a few steps.")
+    gr.Markdown("Create professional audiobooks from your ebooks using Orpheus TTS.")
     
     # Session state to track if emotion tags were processed
     emotion_tags_processed = gr.State(False)
@@ -217,32 +255,113 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     # Session state to track if characters were identified
     characters_identified = gr.State(False)
     
-    # Get TTS configuration from environment variables
-    current_tts_engine = os.environ.get("TTS_MODEL", "kokoro").lower()
-    tts_base_url = os.environ.get("TTS_BASE_URL", "Not configured")
-    
-    with gr.Row():
-        with gr.Column(scale=1):
-            gr.Markdown('<div class="step-heading">📚 Step 1: Book Details</div>')
+    with gr.Tabs():
+        # ==================== Voice Sampling Tab ====================
+        with gr.TabItem("🎙️ Voice Sampling"):
+            gr.Markdown("### Preview Orpheus TTS Voices")
+            gr.Markdown("Test different voices with your own text before creating an audiobook.")
             
-            book_title = gr.Textbox(
-                label="Book Title", 
-                placeholder="Enter the title of your book",
-                info="This will be used for naming the audiobook file"
+            with gr.Row():
+                with gr.Column(scale=2):
+                    voice_choices = get_voice_list()
+                    voice_descriptions = get_available_voices()
+                    
+                    voice_selector = gr.Dropdown(
+                        choices=voice_choices,
+                        label="Select Voice",
+                        value="tara",
+                        info="Choose a voice to preview"
+                    )
+                    
+                    # Show voice description
+                    voice_description = gr.Textbox(
+                        label="Voice Description",
+                        value=voice_descriptions.get("tara", ""),
+                        interactive=False
+                    )
+                    
+                    sample_text = gr.Textbox(
+                        label="Sample Text",
+                        placeholder="Enter text to hear the voice sample...",
+                        value="Hello! This is a sample of my voice. I can read your books with emotion and expression, bringing characters to life.",
+                        lines=4,
+                        info="Enter any text you want to hear in the selected voice"
+                    )
+                    
+                    generate_sample_btn = gr.Button("🔊 Generate Sample", variant="primary")
+                    
+                    sample_status = gr.Textbox(
+                        label="Status",
+                        interactive=False,
+                        placeholder="Click 'Generate Sample' to hear the voice"
+                    )
+                    
+                with gr.Column(scale=1):
+                    gr.Markdown("### 🎧 Audio Preview")
+                    audio_preview = gr.Audio(
+                        label="Voice Sample",
+                        type="filepath",
+                        interactive=False
+                    )
+                    
+                    gr.Markdown("""
+                    ### Available Voices
+                    
+                    **Female Voices:**
+                    - **Tara** - Warm, expressive narrator
+                    - **Leah** - Soft, gentle tone
+                    - **Jess** - Energetic, youthful
+                    - **Mia** - Clear, articulate
+                    - **Zoe** - Neutral, versatile
+                    
+                    **Male Voices:**
+                    - **Leo** - Deep, authoritative
+                    - **Dan** - Friendly, conversational
+                    - **Zac** - Strong, confident narrator
+                    """)
+            
+            # Voice selector change handler
+            def update_voice_description(voice_name):
+                descriptions = get_available_voices()
+                return descriptions.get(voice_name, "No description available")
+            
+            voice_selector.change(
+                update_voice_description,
+                inputs=[voice_selector],
+                outputs=[voice_description]
             )
             
-            book_input = gr.File(
-                label="Upload Book"
+            # Generate sample button handler
+            generate_sample_btn.click(
+                generate_voice_sample,
+                inputs=[voice_selector, sample_text],
+                outputs=[audio_preview, sample_status]
             )
-            
-            text_decoding_option = gr.Radio(
-                ["textract", "calibre"], 
-                label="Text Extraction Method", 
-                value="textract",
-                info="Use calibre for better formatted results, wider compatibility for ebook formats. You can try both methods and choose based on the output result."
-            )
-            
-            validate_btn = gr.Button("Validate Book", variant="primary")
+        
+        # ==================== Audiobook Creation Tab ====================
+        with gr.TabItem("📖 Create Audiobook"):
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown('<div class="step-heading">📚 Step 1: Book Details</div>')
+                    
+                    book_title = gr.Textbox(
+                        label="Book Title", 
+                        placeholder="Enter the title of your book",
+                        info="This will be used for naming the audiobook file"
+                    )
+                    
+                    book_input = gr.File(
+                        label="Upload Book"
+                    )
+                    
+                    text_decoding_option = gr.Radio(
+                        ["textract", "calibre"], 
+                        label="Text Extraction Method", 
+                        value="textract",
+                        info="Use calibre for better formatted results, wider compatibility for ebook formats. You can try both methods and choose based on the output result."
+                    )
+                    
+                    validate_btn = gr.Button("Validate Book", variant="primary")
 
     with gr.Row():
         with gr.Column():
@@ -292,9 +411,8 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                 lines=3
             )
 
-    # Add emotion tags step (only visible if Orpheus TTS engine is configured)
-    emotion_tags_visible = current_tts_engine == "orpheus"
-    with gr.Row(visible=emotion_tags_visible):
+    # Add emotion tags step (always visible since we use Orpheus TTS)
+    with gr.Row():
         with gr.Column():
             gr.Markdown('<div class="step-heading">🎭 Step 3.5: Add Emotion Tags (Optional - Requires LLM)</div>')
             
@@ -313,7 +431,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                 * **`<yawn>`** - For yawning or expressions of tiredness
                 * **`<gasp>`** - For gasping sounds of surprise/shock
                 
-                These tags are automatically placed based on the text context and work only with **Orpheus TTS**.
+                These tags are automatically placed based on the text context using an LLM.
                 """)
                 
             emotion_tags_output = gr.Textbox(
@@ -328,25 +446,11 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
             gr.Markdown('<div class="step-heading">🎧 Step 4: Generate Audiobook</div>')
             
             with gr.Row():
-                voice_type = gr.Radio(
-                    ["Single Voice", "Multi-Voice"], 
-                    label="Narration Type",
-                    value="Single Voice",
-                    info="Multi-Voice requires character identification"
-                )
-
                 narrator_gender = gr.Radio(
                     ["male", "female"], 
-                    label="Choose whether you want the book to be read in a male or female voice",
-                    value="female"
-                )
-                
-                tts_engine_display = gr.Radio(
-                    ["kokoro", "orpheus"], 
-                    label="TTS Engine",
-                    value=current_tts_engine,
-                    interactive=False,
-                    info="Configure TTS engine in .env file. Orpheus supports emotion tags."
+                    label="Narrator Voice",
+                    value="female",
+                    info="Choose the narrator voice gender"
                 )
                 
                 output_format = gr.Dropdown(
@@ -356,10 +460,8 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                     info="M4B supports chapters and cover art"
                 )
             
-            # Emotion tags status display (conditional visibility based on TTS engine in .env)
-            emotion_tags_visible = current_tts_engine == "orpheus"
-            
-            with gr.Group(visible=emotion_tags_visible) as emotion_tags_group:
+            # Emotion tags status display (always visible since we only use Orpheus)
+            with gr.Group() as emotion_tags_group:
                 emotion_tags_status_display = gr.Radio(
                     choices=["✅ Emotion tags processed - will be used in audiobook", "❌ No emotion tags - standard narration will be used"],
                     value="❌ No emotion tags - standard narration will be used",  # Always start with default
@@ -434,7 +536,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     # Update the generate_audiobook_wrapper to output both progress text and file path
     generate_btn.click(
         generate_audiobook_wrapper, 
-        inputs=[voice_type, narrator_gender, output_format, book_input, emotion_tags_processed, book_title], 
+        inputs=[narrator_gender, output_format, book_input, emotion_tags_processed, book_title], 
         outputs=[audio_output, audiobook_file],
         queue=True
     ).then(

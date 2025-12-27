@@ -32,12 +32,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-CHARACTER_IDENTIFICATION_LLM_BASE_URL=os.environ.get("CHARACTER_IDENTIFICATION_LLM_BASE_URL", "http://localhost:1234/v1")
-CHARACTER_IDENTIFICATION_LLM_API_KEY=os.environ.get("CHARACTER_IDENTIFICATION_LLM_API_KEY", "lm-studio")
-CHARACTER_IDENTIFICATION_LLM_MODEL_NAME=os.environ.get("CHARACTER_IDENTIFICATION_LLM_MODEL_NAME", "Qwen/Qwen3-30B-A3B-Instruct-2507")
+# Unified LLM configuration (used for both character identification and emotion tags)
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "not-needed")
+LLM_MODEL_NAME = os.environ.get("LLM_MODEL_NAME", "gpt-oss-20b")
 
-async_openai_client = AsyncOpenAI(base_url=CHARACTER_IDENTIFICATION_LLM_BASE_URL, api_key=CHARACTER_IDENTIFICATION_LLM_API_KEY)
-model_name = CHARACTER_IDENTIFICATION_LLM_MODEL_NAME
+async_openai_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+model_name = LLM_MODEL_NAME
 
 def extract_dialogues(text):
     """Extract dialogue lines enclosed in quotes."""

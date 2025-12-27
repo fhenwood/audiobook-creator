@@ -1,14 +1,164 @@
-version: '3.8'
-
 services:
+  # Init container to download models - uses alpine with curl for proper permissions
+  model_downloader:
+    image: alpine:latest
+    volumes:
+      - orpheus_gguf_models:/models/orpheus
+      - llm_models:/models/llm
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        apk add --no-cache curl
+        
+        download_model() {
+          local url="$$1"
+          local output="$$2"
+          local name="$$3"
+          
+          echo "Downloading $$name..."
+          # Download with progress, follow redirects, fail on HTTP errors
+          if curl -fL --progress-bar -o "$$output.tmp" "$$url"; then
+            # Check if it's a valid GGUF file (magic bytes: GGUF)
+            if head -c 4 "$$output.tmp" | grep -q "GGUF"; then
+              mv "$$output.tmp" "$$output"
+              echo "✓ $$name downloaded successfully"
+              return 0
+            else
+              echo "✗ Downloaded file is not a valid GGUF model"
+              rm -f "$$output.tmp"
+              return 1
+            fi
+          else
+            echo "✗ Failed to download $$name"
+            rm -f "$$output.tmp"
+            return 1
+          fi
+        }
+        
+        echo "=== Checking for Orpheus TTS model ==="
+        if [ -f "/models/orpheus/${ORPHEUS_MODEL_NAME}" ]; then
+          if head -c 4 "/models/orpheus/${ORPHEUS_MODEL_NAME}" | grep -q "GGUF"; then
+            echo "✓ Orpheus model already exists and is valid"
+          else
+            echo "Existing Orpheus model is invalid, re-downloading..."
+            rm -f "/models/orpheus/${ORPHEUS_MODEL_NAME}"
+            download_model "https://huggingface.co/${ORPHEUS_HF_REPO}/resolve/main/${ORPHEUS_MODEL_NAME}" \
+              "/models/orpheus/${ORPHEUS_MODEL_NAME}" "${ORPHEUS_MODEL_NAME}"
+          fi
+        else
+          download_model "https://huggingface.co/${ORPHEUS_HF_REPO}/resolve/main/${ORPHEUS_MODEL_NAME}" \
+            "/models/orpheus/${ORPHEUS_MODEL_NAME}" "${ORPHEUS_MODEL_NAME}"
+        fi
+        
+        echo ""
+        echo "=== Checking for LLM model ==="
+        if [ -f "/models/llm/${LLM_MODEL_FILE}" ]; then
+          if head -c 4 "/models/llm/${LLM_MODEL_FILE}" | grep -q "GGUF"; then
+            echo "✓ LLM model already exists and is valid"
+          else
+            echo "Existing LLM model is invalid, re-downloading..."
+            rm -f "/models/llm/${LLM_MODEL_FILE}"
+            download_model "https://huggingface.co/${LLM_HF_REPO}/resolve/main/${LLM_MODEL_FILE}" \
+              "/models/llm/${LLM_MODEL_FILE}" "${LLM_MODEL_FILE}"
+          fi
+        else
+          download_model "https://huggingface.co/${LLM_HF_REPO}/resolve/main/${LLM_MODEL_FILE}" \
+            "/models/llm/${LLM_MODEL_FILE}" "${LLM_MODEL_FILE}"
+        fi
+        
+        echo ""
+        echo "=== Model download check complete! ==="
+    environment:
+      - ORPHEUS_MODEL_NAME=${ORPHEUS_MODEL_NAME}
+      - ORPHEUS_HF_REPO=${ORPHEUS_HF_REPO}
+      - LLM_MODEL_FILE=${LLM_MODEL_FILE}
+      - LLM_HF_REPO=${LLM_HF_REPO}
+
+  # Main audiobook creator app
   audiobook_creator:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: audiobook_creator
+    ports:
+      - "7860:7860"
     volumes:
-      - .:/app
-    env_file:
-      - .env
-    restart: always
-    network_mode: host
+      - ./generated_audiobooks:/app/generated_audiobooks
+      - ./audio_samples:/app/audio_samples
+      - ./static_files:/app/static_files
+    environment:
+      - ORPHEUS_API_URL=http://orpheus_tts:8880
+      - LLM_API_URL=http://llm_server:8000/v1
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - FORCE_CPU=${FORCE_CPU:-false}
+    depends_on:
+      model_downloader:
+        condition: service_completed_successfully
+      orpheus_tts:
+        condition: service_started
+      llm_server:
+        condition: service_started
+    restart: unless-stopped
+
+  # Orpheus TTS service - generates audio from tokens
+  orpheus_tts:
+    build:
+      context: ./orpheus_tts
+      dockerfile: Dockerfile
+    ports:
+      - "8880:8880"
+    volumes:
+      - orpheus_snac_models:/root/.cache/huggingface
+      - ./orpheus_tts/outputs:/app/outputs
+    environment:
+      - ORPHEUS_API_URL=http://orpheus_llama:5006/v1/completions
+      - FORCE_CPU=${FORCE_CPU:-false}
+    depends_on:
+      model_downloader:
+        condition: service_completed_successfully
+      orpheus_llama:
+        condition: service_started
+    restart: unless-stopped
+
+  # llama.cpp server for Orpheus TTS token generation
+  orpheus_llama:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "5006:5006"
+    volumes:
+      - orpheus_gguf_models:/models:ro
+    environment:
+      - LLAMA_ARG_MODEL=/models/${ORPHEUS_MODEL_NAME}
+      - LLAMA_ARG_CTX_SIZE=8192
+      - LLAMA_ARG_HOST=0.0.0.0
+      - LLAMA_ARG_PORT=5006
+      - LLAMA_ARG_N_GPU_LAYERS=${GPU_LAYERS:-0}
+    depends_on:
+      model_downloader:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # llama.cpp server for LLM (character extraction, emotion tags)
+  llm_server:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "8000:8000"
+    volumes:
+      - llm_models:/models:ro
+    environment:
+      - LLAMA_ARG_MODEL=/models/${LLM_MODEL_FILE}
+      - LLAMA_ARG_CTX_SIZE=16384
+      - LLAMA_ARG_HOST=0.0.0.0
+      - LLAMA_ARG_PORT=8000
+      - LLAMA_ARG_N_GPU_LAYERS=${GPU_LAYERS:-0}
+    depends_on:
+      model_downloader:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  orpheus_snac_models:
+  orpheus_gguf_models:
+  llm_models:
+  audiobook_output:
