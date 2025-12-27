@@ -468,10 +468,9 @@ audiobook-creator/
 │       ├── text_preprocessing.py  # Text cleanup
 │       ├── shell_commands.py  # Shell command execution
 │       └── emotion_processing.py  # Emotion tag processing
-├── orpheus_tts/               # Orpheus TTS service
+├── orpheus_tts/               # Orpheus TTS engine code
 ├── generated_audiobooks/      # Output directory
-├── audio_samples/             # Voice samples & references
-├── sample_book_and_audio/     # Example book and audiobooks
+├── audio_samples/             # Voice samples for Chatterbox
 ├── static_files/              # Static assets (voice map, etc.)
 ├── docker-compose.yaml        # Docker orchestration
 ├── Dockerfile                 # Container build instructions

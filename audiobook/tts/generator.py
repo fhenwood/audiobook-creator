@@ -1163,7 +1163,7 @@ async def main():
     os.makedirs("generated_audiobooks", exist_ok=True)
 
     # Default values
-    book_path = "./sample_book_and_audio/The Adventure of the Lost Treasure - Prakhar Sharma.epub"
+    book_path = None
     generate_m4b_audiobook_file = False
     output_format = "aac"
 

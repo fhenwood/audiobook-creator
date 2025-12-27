@@ -424,15 +424,15 @@ def process_book_and_extract_text(
 
 def main():
     # Default book path
-    book_path = "./sample_book_and_audio/The Adventure of the Lost Treasure - Prakhar Sharma.epub"
+    book_path = None
 
     # Check if a path is provided via command-line arguments
     if len(sys.argv) > 1:
         book_path = sys.argv[1]
         print(f"📂 Using book file from command-line argument: **{book_path}**")
     else:
-        # Ask user for book file path if not provided
-        input_path = input("\n📖 Enter the **path to the book file** (Press Enter to use default): ").strip()
+        # Ask user for book file path
+        input_path = input("\n📖 Enter the **path to the book file**: ").strip()
         if input_path:
             book_path = input_path
         print(f"📂 Using book file: **{book_path}**")
