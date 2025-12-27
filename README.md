@@ -19,45 +19,135 @@ Convert ebooks (EPUB, PDF, TXT) into high-quality audiobooks with expressive AI 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Docker & Docker Compose
-- ~20GB disk space for models
-- NVIDIA GPU + [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (optional, for faster generation)
 
-### Installation
+| Requirement | Details |
+|-------------|---------|
+| **Docker** | [Install Docker](https://docs.docker.com/get-docker/) (includes Docker Compose) |
+| **Disk Space** | ~30GB free (models + generated audiobooks) |
+| **RAM** | 16GB minimum (32GB recommended for CPU-only) |
+| **GPU (Optional)** | NVIDIA GPU with 8GB+ VRAM for 10-50x faster generation |
+
+### Step 1: Clone the Repository
 
 ```bash
 git clone https://github.com/fhenwood/audiobook-creator.git
 cd audiobook-creator
-cp .env_sample .env
 ```
 
-### Run with GPU (Recommended)
-
-For **NVIDIA GPU** users (10-50x faster generation):
+### Step 2: Configure Environment
 
 ```bash
-# Start all services with GPU acceleration
-docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+# Copy the sample environment file
+cp .env_sample .env
 
-# View logs (optional)
-docker compose logs -f audiobook_creator
+# (Optional) Edit settings - defaults work for most users
+nano .env
 ```
 
-> **Note:** Make sure `GPU_LAYERS=99` is set in your `.env` file for full GPU offloading.
+Key settings in `.env`:
+- `GPU_LAYERS=99` - Set to `0` for CPU-only, `99` for full GPU
+- `DEFAULT_VOICE=zac` - Default Orpheus voice
 
-### Run with CPU Only
+### Step 3: Install NVIDIA Container Toolkit (GPU Users Only)
 
-For CPU-only systems:
+Skip this step if using CPU only.
 
+<details>
+<summary><b>Ubuntu/Debian</b></summary>
+
+```bash
+# Add NVIDIA package repository
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+# Install the toolkit
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+
+# Configure Docker to use NVIDIA runtime
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+</details>
+
+<details>
+<summary><b>Fedora/RHEL/CentOS</b></summary>
+
+```bash
+# Add NVIDIA package repository
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
+  sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo
+
+# Install the toolkit
+sudo dnf install -y nvidia-container-toolkit
+
+# Configure Docker to use NVIDIA runtime
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+</details>
+
+<details>
+<summary><b>Arch Linux</b></summary>
+
+```bash
+# Install from AUR
+yay -S nvidia-container-toolkit
+
+# Configure Docker to use NVIDIA runtime
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+</details>
+
+Verify installation:
+```bash
+docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
+```
+
+### Step 4: Start the Application
+
+**With GPU (Recommended):**
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
+```
+
+**CPU Only:**
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose.cpu.yaml up -d
 ```
 
-### Access the Web UI
+### Step 5: Wait for Model Downloads
+
+First run downloads AI models (~15GB). Monitor progress:
+
+```bash
+# Watch download progress
+docker compose logs -f model_downloader
+
+# Watch main application logs
+docker compose logs -f audiobook_creator
+```
+
+### Step 6: Access the Web UI
 
 Open **http://localhost:7860** in your browser.
 
-> ⏳ **First run:** Models download automatically (~15GB for Orpheus+LLM). Chatterbox downloads an additional ~3GB on first use.
+> ⏳ **Note:** Chatterbox (voice cloning) downloads an additional ~3GB model on first use.
+
+### Verify GPU is Working
+
+```bash
+docker exec audiobook-creator-audiobook_creator-1 python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
+```
+
+### Stop the Application
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml down
+```
 
 ## 📖 Usage
 
