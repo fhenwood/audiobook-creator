@@ -109,7 +109,33 @@ docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
 
 ### Step 4: Start the Application
 
-**With GPU (Recommended):**
+**Easy Start (Recommended):**
+```bash
+# Make run script executable (first time only)
+chmod +x run.sh
+
+# Start the application - auto-detects GPU/CPU
+./run.sh
+```
+
+The `run.sh` script automatically:
+- Detects NVIDIA GPU and container toolkit
+- Configures optimal settings for your hardware
+- Starts the appropriate Docker Compose configuration
+
+**Other run.sh commands:**
+```bash
+./run.sh stop      # Stop all services
+./run.sh restart   # Restart all services
+./run.sh logs      # View logs (Ctrl+C to exit)
+./run.sh status    # Show service status
+./run.sh rebuild   # Rebuild Docker images after code changes
+```
+
+<details>
+<summary><b>Manual Start (Alternative)</b></summary>
+
+**With GPU:**
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
 ```
@@ -118,6 +144,7 @@ docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml up -d
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose.cpu.yaml up -d
 ```
+</details>
 
 ### Step 5: Wait for Model Downloads
 
@@ -125,10 +152,10 @@ First run downloads AI models (~15GB). Monitor progress:
 
 ```bash
 # Watch download progress
-docker compose logs -f model_downloader
+./run.sh logs model_downloader
 
 # Watch main application logs
-docker compose logs -f audiobook_creator
+./run.sh logs audiobook_creator
 ```
 
 ### Step 6: Access the Web UI
@@ -146,7 +173,7 @@ docker exec audiobook-creator-audiobook_creator-1 python -c "import torch; print
 ### Stop the Application
 
 ```bash
-docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml down
+./run.sh stop
 ```
 
 ## 📖 Usage
@@ -160,6 +187,20 @@ docker compose -f docker-compose.yaml -f docker-compose.gpu.yaml down
    - **Orpheus**: Choose from 8 preset voices
    - **Chatterbox**: Upload a reference audio for voice cloning
 5. **Generate Audiobook** - Choose MP3, WAV, or M4B format
+
+### Job Manager
+
+The **📋 Jobs** tab lets you track and manage audiobook generation:
+
+- **Jobs persist for 1 week** - Reconnect anytime to check status or download
+- **Resume stalled jobs** - If generation stops unexpectedly, click ▶️ Resume to continue
+- **Download completed audiobooks** - Use the 📥 Download button
+- **Track progress** - See real-time status updates for all jobs
+
+**Job Features:**
+- Automatic checkpoint saving (every 50 lines)
+- Stall detection (jobs with no activity for 5+ minutes are marked as resumable)
+- Progress persists across browser refreshes and container restarts
 
 ### CLI Commands
 
@@ -376,7 +417,8 @@ Change `ORPHEUS_MODEL_NAME` in `.env` for other languages:
 │  ┌─ Gradio Web UI (:7860)         │ - llama.cpp   │ - llama.cpp     │
 │  ├─ Orpheus TTS API (:8880)       │ - GGUF model  │ - GGUF model    │
 │  ├─ Chatterbox (voice cloning)    │ - GPU/CPU     │ - GPU/CPU       │
-│  └─ SNAC audio codec              │               │                 │
+│  ├─ SNAC audio codec              │               │                 │
+│  └─ GPU Resource Manager          │  [on-demand]  │  [on-demand]    │
 └───────────────────────────────────┴───────────────┴─────────────────┘
 
 Services:
@@ -384,6 +426,49 @@ Services:
 • orpheus_llama     - llama.cpp server for Orpheus token generation  
 • llm_server        - llama.cpp server for emotion tag generation (GPT-OSS-20B)
 ```
+
+### 🎮 GPU Resource Management
+
+To optimize GPU memory usage, LLM containers use **phased loading** - only one model runs at a time:
+
+1. **Emotion Tag Phase**: LLM server (~12GB VRAM) processes text for emotion tags
+2. **TTS Generation Phase**: LLM server stops, Orpheus (~5GB VRAM) generates audio
+
+This reduces peak VRAM from ~17GB to ~12GB by never running both models simultaneously.
+
+**Features:**
+- **On-demand startup**: Containers start automatically when you generate an audiobook
+- **Automatic shutdown**: After `GPU_IDLE_TIMEOUT` seconds of inactivity, containers stop to free VRAM
+- **Manual control**: Use the "GPU Resource Status" panel in the Jobs tab to start/stop services
+
+Configure in `.env`:
+```bash
+# Seconds of idle time before stopping LLM containers (0 to disable)
+GPU_IDLE_TIMEOUT=60
+```
+
+### ⚡ Performance Tuning
+
+For maximum TTS generation speed, configure parallel processing based on your available VRAM:
+
+```bash
+# Parallel TTS requests (higher = faster, more VRAM)
+TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE=8   # Default: 8
+
+# Parallel LLM requests for emotion tags
+LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE=4   # Default: 4
+```
+
+**Recommended settings by GPU:**
+
+| GPU | VRAM | TTS Batch | LLM Batch |
+|-----|------|-----------|-----------|
+| RTX 3060 | 12GB | 4 | 2 |
+| RTX 3080 | 10GB | 4 | 2 |
+| RTX 3090 | 24GB | 8 | 4 |
+| RTX 4090 | 24GB | 12 | 6 |
+
+Higher batch sizes process more paragraphs concurrently but require more VRAM. If you see out-of-memory errors, reduce the batch sizes.
 
 ## 💻 Hardware Requirements
 

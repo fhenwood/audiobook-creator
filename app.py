@@ -26,6 +26,7 @@ from audiobook.tts.generator import process_audiobook_generation, validate_book_
 from audiobook.core.emotion_tags import process_emotion_tags
 from audiobook.tts.voice_mapping import get_available_voices, get_voice_list
 from audiobook.utils.job_manager import job_manager, JobStatus, get_jobs_dataframe
+from audiobook.utils.gpu_resource_manager import gpu_manager
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -108,7 +109,13 @@ def save_book_wrapper(text_content):
 
 async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, add_emotion_tags_checkbox, book_title, reference_audio=None):
     """Wrapper for audiobook generation with validation, progress updates, and job tracking.
-    Now includes automatic emotion tag processing if enabled."""
+    Now includes automatic emotion tag processing if enabled.
+    
+    GPU Memory Optimization:
+    - Phase 1 (Emotion Tags): Load LLM server (~12GB), process tags, then UNLOAD
+    - Phase 2 (TTS): Load Orpheus LLM (~5GB), generate audio, then unload
+    - This ensures we never need both models in VRAM at once!
+    """
     if book_file is None:
         yield gr.Warning("Please upload a book file first."), None, None
         yield None, None, None
@@ -137,91 +144,244 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
     )
     job_id = job.job_id
     
-    if tts_engine == "Chatterbox":
-        yield gr.Info(f"🎤 Job {job_id}: Using Chatterbox with zero-shot voice cloning"), None, job_id
-    
-    # Early validation for M4B format
-    if output_format == "M4B (Chapters & Cover)":
-        job_manager.update_job_progress(job_id, "Validating book file...")
-        yield gr.Info(f"Job {job_id}: Validating book file for M4B audiobook generation..."), None, job_id
-        is_valid, error_message, metadata = validate_book_for_m4b_generation(book_file)
-        
-        if not is_valid:
-            job_manager.fail_job(job_id, f"Book validation failed: {error_message}")
-            yield gr.Warning(f"❌ Job {job_id}: Book validation failed: {error_message}"), None, job_id
-            yield None, None, job_id
-            return
-            
-        yield gr.Info(f"✅ Job {job_id}: Book validation successful! Title: {metadata.get('Title', 'Unknown')}"), None, job_id
-    
-    # Determine if emotion tags should be used (Orpheus only)
+    # Determine what we need
     add_emotion_tags = add_emotion_tags_checkbox if tts_engine == "Orpheus" else False
-    
-    # If emotion tags enabled, process them first as part of this job
-    if add_emotion_tags:
-        job_manager.update_job_progress(job_id, "🎭 Processing emotion tags...")
-        yield f"🎭 Job {job_id}: Processing emotion tags (this may take a few minutes)...", None, job_id
-        
-        try:
-            # Run emotion tags processing
-            async for progress in process_emotion_tags(False):
-                job_manager.update_job_progress(job_id, f"🎭 Emotion tags: {str(progress)[:100]}")
-                yield f"🎭 {progress}", None, job_id
-            
-            yield gr.Info(f"✅ Job {job_id}: Emotion tags added successfully!"), None, job_id
-        except Exception as e:
-            job_manager.fail_job(job_id, f"Emotion tags failed: {str(e)}")
-            yield gr.Warning(f"❌ Job {job_id}: Error adding emotion tags: {str(e)}"), None, job_id
-            yield None, None, job_id
-            return
-    elif tts_engine == "Orpheus":
-        yield gr.Info(f"📖 Job {job_id}: Using standard narration (no emotion tags)"), None, job_id
+    need_orpheus_tts = tts_engine == "Orpheus"
     
     try:
-        last_output = None
-        audiobook_path = None
-        job_manager.update_job_progress(job_id, "Starting audiobook generation...")
+        if tts_engine == "Chatterbox":
+            yield gr.Info(f"🎤 Job {job_id}: Using Chatterbox with zero-shot voice cloning"), None, job_id
         
-        # Pass through all yield values from the original function
-        async for output in process_audiobook_generation(
-            "Single Voice", 
-            narrator_voice, 
-            output_format, 
-            book_file, 
-            add_emotion_tags,
-            tts_engine=tts_engine,
-            reference_audio_path=reference_audio
-        ):
-            last_output = output
-            # Update job progress with current output
-            if output:
-                job_manager.update_job_progress(job_id, str(output)[:200])
-            yield output, None, job_id  # Yield each progress update without file path
+        # Early validation for M4B format
+        if output_format == "M4B (Chapters & Cover)":
+            job_manager.update_job_progress(job_id, "Validating book file...")
+            yield gr.Info(f"Job {job_id}: Validating book file for M4B audiobook generation..."), None, job_id
+            is_valid, error_message, metadata = validate_book_for_m4b_generation(book_file)
+            
+            if not is_valid:
+                job_manager.fail_job(job_id, f"Book validation failed: {error_message}")
+                yield gr.Warning(f"❌ Job {job_id}: Book validation failed: {error_message}"), None, job_id
+                yield None, None, job_id
+                return
+                
+            yield gr.Info(f"✅ Job {job_id}: Book validation successful! Title: {metadata.get('Title', 'Unknown')}"), None, job_id
         
-        # Get the correct file extension based on the output format
-        generate_m4b_audiobook_file = True if output_format == "M4B (Chapters & Cover)" else False
-        file_extension = "m4b" if generate_m4b_audiobook_file else output_format.lower()
+        # =====================================================================
+        # PHASE 1: Emotion Tags (if enabled) - Uses LLM server (~12GB VRAM)
+        # =====================================================================
+        if add_emotion_tags:
+            job_manager.update_job_progress(job_id, "🚀 Starting LLM server for emotion tags...")
+            yield f"🚀 Job {job_id}: Loading LLM server (~12GB VRAM) for emotion tags...", None, job_id
+            
+            # Acquire LLM server
+            success, gpu_message = gpu_manager.acquire_llm()
+            if not success:
+                job_manager.fail_job(job_id, f"Failed to start LLM server: {gpu_message}")
+                yield gr.Warning(f"❌ Job {job_id}: {gpu_message}"), None, job_id
+                yield None, None, job_id
+                return
+            
+            yield gr.Info(f"✅ Job {job_id}: LLM server ready"), None, job_id
+            
+            try:
+                job_manager.update_job_progress(job_id, "🎭 Processing emotion tags...")
+                yield f"🎭 Job {job_id}: Processing emotion tags...", None, job_id
+                
+                # Run emotion tags processing
+                async for progress in process_emotion_tags(False):
+                    job_manager.update_job_progress(job_id, f"🎭 Emotion tags: {str(progress)[:100]}")
+                    yield f"🎭 {progress}", None, job_id
+                
+                yield gr.Info(f"✅ Job {job_id}: Emotion tags added successfully!"), None, job_id
+            except Exception as e:
+                job_manager.fail_job(job_id, f"Emotion tags failed: {str(e)}")
+                yield gr.Warning(f"❌ Job {job_id}: Error adding emotion tags: {str(e)}"), None, job_id
+                yield None, None, job_id
+                return
+            finally:
+                # IMPORTANT: Release LLM server BEFORE starting TTS to free ~12GB VRAM
+                print(f"🔄 Job {job_id}: Releasing LLM server to free VRAM for TTS...")
+                gpu_manager.release_llm(immediate=True)
+                yield f"🔄 Job {job_id}: LLM server stopped, freeing ~12GB VRAM for TTS", None, job_id
         
-        # Set the audiobook file path according to the provided information
-        audiobook_path = os.path.join("generated_audiobooks", f"audiobook.{file_extension}")
+        elif tts_engine == "Orpheus":
+            yield gr.Info(f"📖 Job {job_id}: Using standard narration (no emotion tags)"), None, job_id
+        
+        # =====================================================================
+        # PHASE 2: TTS Generation - Uses Orpheus LLM (~5GB VRAM) for Orpheus engine
+        # =====================================================================
+        if need_orpheus_tts:
+            job_manager.update_job_progress(job_id, "🚀 Starting Orpheus LLM for TTS...")
+            yield f"🚀 Job {job_id}: Loading Orpheus LLM (~5GB VRAM) for TTS generation...", None, job_id
+            
+            # Acquire Orpheus LLM
+            success, gpu_message = gpu_manager.acquire_orpheus()
+            if not success:
+                job_manager.fail_job(job_id, f"Failed to start Orpheus LLM: {gpu_message}")
+                yield gr.Warning(f"❌ Job {job_id}: {gpu_message}"), None, job_id
+                yield None, None, job_id
+                return
+            
+            yield gr.Info(f"✅ Job {job_id}: Orpheus LLM ready"), None, job_id
+        
+        try:
+            last_output = None
+            audiobook_path = None
+            job_manager.update_job_progress(job_id, "Starting audiobook generation...")
+            
+            # Pass through all yield values from the original function
+            async for output in process_audiobook_generation(
+                "Single Voice", 
+                narrator_voice, 
+                output_format, 
+                book_file, 
+                add_emotion_tags,
+                tts_engine=tts_engine,
+                reference_audio_path=reference_audio,
+                job_id=job_id
+            ):
+                last_output = output
+                # Update job progress with current output
+                if output:
+                    job_manager.update_job_progress(job_id, str(output)[:200])
+                yield output, None, job_id  # Yield each progress update without file path
+            
+            # Get the correct file extension based on the output format
+            generate_m4b_audiobook_file = True if output_format == "M4B (Chapters & Cover)" else False
+            file_extension = "m4b" if generate_m4b_audiobook_file else output_format.lower()
+            
+            # Set the audiobook file path according to the provided information
+            audiobook_path = os.path.join("generated_audiobooks", f"audiobook.{file_extension}")
 
-        # Rename the audiobook file to the book title
-        final_path = os.path.join("generated_audiobooks", f"{book_title}.{file_extension}")
-        os.rename(audiobook_path, final_path)
-        audiobook_path = final_path
-        
-        # Mark job as completed
-        job_manager.complete_job(job_id, audiobook_path)
-        
-        # Final yield with success notification and file path
-        yield gr.Info(f"✅ Job {job_id}: Audiobook generated successfully! You can download it below or from the Jobs tab.", duration=10), None, job_id
-        yield last_output, audiobook_path, job_id
-        return
+            # Rename the audiobook file to the book title
+            final_path = os.path.join("generated_audiobooks", f"{book_title}.{file_extension}")
+            os.rename(audiobook_path, final_path)
+            audiobook_path = final_path
+            
+            # Mark job as completed
+            job_manager.complete_job(job_id, audiobook_path)
+            
+            # Final yield with success notification and file path
+            yield gr.Info(f"✅ Job {job_id}: Audiobook generated successfully! You can download it below or from the Jobs tab.", duration=10), None, job_id
+            yield last_output, audiobook_path, job_id
+            return
+        finally:
+            # Release Orpheus LLM after TTS generation
+            if need_orpheus_tts:
+                print(f"🔓 Job {job_id}: Releasing Orpheus LLM")
+                gpu_manager.release_orpheus()
+                
     except Exception as e:
         print(e)
         traceback.print_exc()
         job_manager.fail_job(job_id, str(e))
         yield gr.Warning(f"❌ Job {job_id}: Error generating audiobook: {str(e)}"), None, job_id
+        yield None, None, job_id
+        return
+
+
+async def resume_job_wrapper(job_id):
+    """Resume a stalled job from its checkpoint.
+    
+    This function retrieves the job's checkpoint data and continues
+    generation from where it left off.
+    """
+    if not job_id:
+        yield gr.Warning("Please enter a Job ID to resume"), None, job_id
+        yield None, None, job_id
+        return
+    
+    job = job_manager.get_job(job_id)
+    if not job:
+        yield gr.Warning(f"Job {job_id} not found"), None, job_id
+        yield None, None, job_id
+        return
+    
+    if job.status != JobStatus.STALLED.value:
+        yield gr.Warning(f"Job {job_id} is not in a resumable state (status: {job.status})"), None, job_id
+        yield None, None, job_id
+        return
+    
+    checkpoint = job.get_checkpoint()
+    if not checkpoint:
+        yield gr.Warning(f"Job {job_id} has no checkpoint data to resume from"), None, job_id
+        yield None, None, job_id
+        return
+    
+    # Prepare job for resume
+    job_manager.prepare_job_for_resume(job_id)
+    yield gr.Info(f"🔄 Resuming job {job_id} from {checkpoint.lines_completed}/{checkpoint.total_lines} lines..."), None, job_id
+    
+    # Determine what resources we need
+    need_orpheus_tts = job.tts_engine == "Orpheus"
+    
+    try:
+        # Acquire Orpheus LLM if needed
+        if need_orpheus_tts:
+            job_manager.update_job_progress(job_id, "🚀 Starting Orpheus LLM for resume...")
+            yield f"🚀 Job {job_id}: Loading Orpheus LLM for resumed generation...", None, job_id
+            
+            success, gpu_message = gpu_manager.acquire_orpheus()
+            if not success:
+                job_manager.fail_job(job_id, f"Failed to start Orpheus LLM: {gpu_message}")
+                yield gr.Warning(f"❌ Job {job_id}: {gpu_message}"), None, job_id
+                yield None, None, job_id
+                return
+            
+            yield gr.Info(f"✅ Job {job_id}: Orpheus LLM ready"), None, job_id
+        
+        try:
+            last_output = None
+            audiobook_path = None
+            job_manager.update_job_progress(job_id, f"Resuming from {checkpoint.lines_completed} lines...")
+            
+            # Resume generation with checkpoint
+            async for output in process_audiobook_generation(
+                "Single Voice", 
+                job.voice, 
+                job.output_format, 
+                checkpoint.book_file_path, 
+                checkpoint.add_emotion_tags,
+                tts_engine=job.tts_engine,
+                reference_audio_path=checkpoint.reference_audio_path if hasattr(checkpoint, 'reference_audio_path') else None,
+                job_id=job_id,
+                resume_checkpoint=checkpoint.to_dict()
+            ):
+                last_output = output
+                if output:
+                    job_manager.update_job_progress(job_id, str(output)[:200])
+                yield output, None, job_id
+            
+            # Get the correct file extension
+            generate_m4b_audiobook_file = job.output_format == "M4B (Chapters & Cover)"
+            file_extension = "m4b" if generate_m4b_audiobook_file else job.output_format.lower()
+            
+            # Set the audiobook file path
+            audiobook_path = os.path.join("generated_audiobooks", f"audiobook.{file_extension}")
+            
+            # Rename to book title
+            final_path = os.path.join("generated_audiobooks", f"{job.book_title}.{file_extension}")
+            if os.path.exists(audiobook_path):
+                os.rename(audiobook_path, final_path)
+                audiobook_path = final_path
+            
+            # Mark job as completed
+            job_manager.complete_job(job_id, audiobook_path)
+            
+            yield gr.Info(f"✅ Job {job_id}: Audiobook resumed and completed successfully!"), None, job_id
+            yield last_output, audiobook_path, job_id
+            return
+            
+        finally:
+            if need_orpheus_tts:
+                print(f"🔓 Job {job_id}: Releasing Orpheus LLM")
+                gpu_manager.release_orpheus()
+                
+    except Exception as e:
+        print(e)
+        traceback.print_exc()
+        job_manager.fail_job(job_id, str(e))
+        yield gr.Warning(f"❌ Job {job_id}: Error resuming job: {str(e)}"), None, job_id
         yield None, None, job_id
         return
 
@@ -261,26 +421,35 @@ def generate_voice_sample(tts_engine, voice_name, sample_text, reference_audio):
             traceback.print_exc()
             return None, f"❌ Error generating Chatterbox sample: {str(e)}"
     
-    # Orpheus TTS
+    # Orpheus TTS - needs orpheus_llama container
     if not voice_name:
         return None, "Please select a voice."
     
     try:
-        client = OpenAI(base_url=TTS_BASE_URL, api_key=TTS_API_KEY)
+        # Acquire Orpheus LLM for voice sample
+        success, gpu_message = gpu_manager.acquire_orpheus()
+        if not success:
+            return None, f"❌ Failed to start Orpheus service: {gpu_message}"
         
-        # Generate audio sample with Orpheus
-        with client.audio.speech.with_streaming_response.create(
-            model="orpheus",
-            voice=voice_name,
-            response_format="wav",
-            speed=0.85,
-            input=sample_text.strip(),
-            timeout=120
-        ) as response:
-            sample_path = f"static_files/voice_samples/{voice_name}_sample.wav"
-            response.stream_to_file(sample_path)
+        try:
+            client = OpenAI(base_url=TTS_BASE_URL, api_key=TTS_API_KEY)
             
-        return sample_path, f"✅ Generated sample for Orpheus voice: {voice_name}"
+            # Generate audio sample with Orpheus
+            with client.audio.speech.with_streaming_response.create(
+                model="orpheus",
+                voice=voice_name,
+                response_format="wav",
+                speed=0.85,
+                input=sample_text.strip(),
+                timeout=120
+            ) as response:
+                sample_path = f"static_files/voice_samples/{voice_name}_sample.wav"
+                response.stream_to_file(sample_path)
+                
+            return sample_path, f"✅ Generated sample for Orpheus voice: {voice_name}"
+        finally:
+            # Release Orpheus (uses idle timeout so quick successive samples don't restart)
+            gpu_manager.release_orpheus()
     except Exception as e:
         traceback.print_exc()
         return None, f"❌ Error generating sample: {str(e)}"
@@ -552,7 +721,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
         # ==================== Jobs Tab ====================
         with gr.TabItem("📋 Jobs"):
             gr.Markdown("### Audiobook Generation Jobs")
-            gr.Markdown("Track your audiobook generation jobs. Jobs are kept for **24 hours** so you can reconnect and download your audiobooks.")
+            gr.Markdown("Track your audiobook generation jobs. Jobs are kept for **1 week** so you can reconnect and download your audiobooks.")
             
             with gr.Row():
                 refresh_jobs_btn = gr.Button("🔄 Refresh Jobs", variant="secondary")
@@ -577,6 +746,8 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                 
                 with gr.Column(scale=1):
                     view_job_btn = gr.Button("🔍 View Job", variant="primary")
+                    download_job_btn = gr.Button("📥 Download", variant="secondary")
+                    resume_job_btn = gr.Button("▶️ Resume Job", variant="secondary")
                     delete_job_btn = gr.Button("🗑️ Delete Job", variant="stop")
             
             with gr.Group() as job_details_group:
@@ -590,15 +761,103 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                         type="filepath"
                     )
             
+            # GPU Resource Status Section
+            with gr.Accordion("🖥️ GPU Resource Status", open=False):
+                gr.Markdown("""
+                GPU resources are managed automatically. LLM containers start when needed and stop after being idle.
+                This helps free up GPU memory when not generating audiobooks.
+                """)
+                
+                gpu_status_output = gr.Markdown("Click refresh to see GPU status")
+                refresh_gpu_btn = gr.Button("🔄 Refresh GPU Status", variant="secondary")
+                
+                with gr.Row():
+                    stop_gpu_btn = gr.Button("🛑 Stop LLM Services Now", variant="stop")
+                    start_gpu_btn = gr.Button("🚀 Start LLM Services", variant="primary")
+                
+                def get_gpu_status():
+                    """Get formatted GPU resource status."""
+                    status = gpu_manager.get_status()
+                    
+                    if not status.get("docker_available"):
+                        return """
+**⚠️ Docker Management Not Available**
+
+Docker socket not mounted. GPU resource management is disabled.
+Containers will run continuously (default behavior).
+
+To enable GPU management, ensure docker socket is mounted in docker-compose.yaml.
+"""
+                    
+                    llm_status = "🟢 Running" if status.get("llm_server_running") else "🔴 Stopped"
+                    orpheus_status = "🟢 Running" if status.get("orpheus_llama_running") else "🔴 Stopped"
+                    vram_used = status.get("estimated_vram_gb", 0)
+                    
+                    return f"""
+**Docker Management:** ✅ Enabled
+
+**Estimated VRAM Usage:** ~{vram_used}GB
+
+**Idle Timeout:** {status.get('idle_timeout', 60)} seconds
+
+### Container Status:
+| Service | Status | VRAM |
+|---------|--------|------|
+| LLM Server (emotion tags) | {llm_status} | ~12GB |
+| Orpheus LLM (TTS tokens) | {orpheus_status} | ~5GB |
+
+### GPU Optimization Strategy:
+- **Phase 1 (Emotion Tags):** Load LLM server → Process → Unload
+- **Phase 2 (TTS):** Load Orpheus → Generate audio → Unload
+- **Max VRAM needed:** ~12GB (never both at once!)
+
+*Containers start automatically for each phase and stop immediately after.*
+"""
+                
+                def stop_gpu_services():
+                    """Manually stop GPU services."""
+                    success, message = gpu_manager.stop_llm_services()
+                    return f"{'✅' if success else '❌'} {message}\n\n" + get_gpu_status()
+                
+                def start_gpu_services():
+                    """Manually start GPU services."""
+                    success, message = gpu_manager.start_llm_services()
+                    return f"{'✅' if success else '❌'} {message}\n\n" + get_gpu_status()
+                
+                refresh_gpu_btn.click(
+                    get_gpu_status,
+                    inputs=[],
+                    outputs=[gpu_status_output]
+                )
+                
+                stop_gpu_btn.click(
+                    stop_gpu_services,
+                    inputs=[],
+                    outputs=[gpu_status_output]
+                )
+                
+                start_gpu_btn.click(
+                    start_gpu_services,
+                    inputs=[],
+                    outputs=[gpu_status_output]
+                )
+            
             # Job management functions
             def refresh_jobs():
-                """Refresh the jobs table."""
+                """Refresh the jobs table and check for stalled jobs."""
+                # Check for jobs that have stalled (no activity for 5 minutes)
+                stalled = job_manager.check_for_stalled_jobs(stall_timeout_seconds=300)
+                if stalled:
+                    print(f"Marked {len(stalled)} jobs as stalled: {stalled}")
                 return get_jobs_dataframe()
             
             def view_job_details(job_id):
                 """View details of a specific job."""
                 if not job_id or not job_id.strip():
                     return "❌ Please enter a job ID", gr.update(visible=False), None
+                
+                # Check for stalled jobs first
+                job_manager.check_for_stalled_jobs(stall_timeout_seconds=300)
                 
                 job = job_manager.get_job(job_id.strip())
                 if not job:
@@ -609,7 +868,8 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                     "pending": "⏳",
                     "in_progress": "🔄",
                     "completed": "✅",
-                    "failed": "❌"
+                    "failed": "❌",
+                    "stalled": "⏸️"
                 }.get(job.status, "❓")
                 
                 details = f"""
@@ -633,6 +893,14 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                 if job.error_message:
                     details += f"\n**Error:** {job.error_message}"
                 
+                # Show resume info for stalled jobs
+                if job.status == JobStatus.STALLED.value and job.checkpoint:
+                    checkpoint = job.get_checkpoint()
+                    if checkpoint:
+                        pct = (checkpoint.lines_completed / checkpoint.total_lines * 100) if checkpoint.total_lines > 0 else 0
+                        details += f"\n\n**🔄 Resumable:** Yes - {checkpoint.lines_completed}/{checkpoint.total_lines} lines ({pct:.1f}%) completed"
+                        details += "\n\n**💡 Tip:** Click the **▶️ Resume Job** button to continue generation from where it stopped."
+                
                 # Show download if completed
                 if job.status == "completed" and job.output_file and os.path.exists(job.output_file):
                     return details, gr.update(visible=True), job.output_file
@@ -654,19 +922,73 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
             refresh_jobs_btn.click(
                 refresh_jobs,
                 inputs=[],
-                outputs=[jobs_table]
+                outputs=[jobs_table],
+                api_name="get_all_jobs"
             )
             
             view_job_btn.click(
                 view_job_details,
                 inputs=[job_id_input],
-                outputs=[job_details_output, job_download_group, job_download_file]
+                outputs=[job_details_output, job_download_group, job_download_file],
+                api_name="get_job_details"
             )
             
             delete_job_btn.click(
                 delete_job_handler,
                 inputs=[job_id_input],
-                outputs=[job_details_output, jobs_table]
+                outputs=[job_details_output, jobs_table],
+                api_name="delete_job"
+            )
+            
+            def download_job_file(job_id):
+                """Download the output file for a completed job."""
+                if not job_id or not job_id.strip():
+                    return gr.Warning("Please enter a job ID"), None
+                
+                job = job_manager.get_job(job_id.strip())
+                if not job:
+                    return gr.Warning(f"Job `{job_id}` not found or has expired"), None
+                
+                if job.status != "completed":
+                    return gr.Warning(f"Job `{job_id}` is not completed yet (status: {job.status})"), None
+                
+                if not job.output_file or not os.path.exists(job.output_file):
+                    return gr.Warning(f"Output file not found for job `{job_id}`"), None
+                
+                return gr.Info(f"Downloading {os.path.basename(job.output_file)}..."), job.output_file
+            
+            download_job_btn.click(
+                download_job_file,
+                inputs=[job_id_input],
+                outputs=[job_details_output, job_download_file],
+                api_name="download_job"
+            )
+            
+            # Resume job outputs - need to define components for progress display
+            with gr.Group(visible=False) as resume_progress_group:
+                resume_progress_output = gr.Textbox(label="Resume Progress", lines=5, interactive=False)
+                resume_file_output = gr.File(label="Downloaded Audiobook", visible=False)
+            
+            # Resume job handler wrapper
+            async def handle_resume_job(job_id):
+                """Handle resume job button click with progress updates."""
+                results = []
+                file_path = None
+                async for progress, file, _ in resume_job_wrapper(job_id):
+                    if isinstance(progress, str):
+                        results.append(progress)
+                    if file:
+                        file_path = file
+                
+                # Return final state
+                progress_text = "\n".join(results[-10:]) if results else "No progress"  # Last 10 lines
+                return progress_text, file_path, get_jobs_dataframe()
+            
+            resume_job_btn.click(
+                handle_resume_job,
+                inputs=[job_id_input],
+                outputs=[job_details_output, job_download_file, jobs_table],
+                api_name="resume_job"
             )
     
     # Connections with proper handling of Gradio notifications
@@ -694,21 +1016,24 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     validate_btn.click(
         validate_book_upload, 
         inputs=[book_input, book_title], 
-        outputs=[book_title]
+        outputs=[book_title],
+        api_name="validate_book"
     )
     
     convert_btn.click(
         text_extraction_wrapper, 
         inputs=[book_input], 
         outputs=[text_output],
-        queue=True
+        queue=True,
+        api_name="extract_text"
     )
     
     save_btn.click(
         save_book_wrapper, 
         inputs=[text_output], 
         outputs=[],
-        queue=True
+        queue=True,
+        api_name="save_text"
     )
     
     # Update the generate_audiobook_wrapper to output progress text, file path, and job ID
@@ -717,7 +1042,8 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
         generate_audiobook_wrapper, 
         inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, add_emotion_tags_checkbox, book_title, reference_audio_audiobook], 
         outputs=[audio_output, audiobook_file, current_job_id],
-        queue=True
+        queue=True,
+        api_name="generate_audiobook"
     ).then(
         # Make the download box visible after generation completes successfully
         lambda x: gr.update(visible=True) if x is not None else gr.update(visible=False),

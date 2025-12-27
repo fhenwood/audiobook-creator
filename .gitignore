@@ -17,3 +17,7 @@ extracted_book.txt
 chapter_list.txt
 chapters.txt
 cover.jpg
+
+# Orpheus TTS temporary output files
+orpheus_tts/outputs/*.wav
+orpheus_tts/outputs/*.mp3

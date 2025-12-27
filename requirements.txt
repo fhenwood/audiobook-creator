@@ -18,6 +18,7 @@ cffi==2.0.0
 chardet==3.0.4
 charset-normalizer==3.4.4
 chatterbox-tts
+docker==7.1.0
 click==8.3.0
 cohere==5.20.0
 colorama==0.4.6

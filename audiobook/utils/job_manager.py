@@ -1,5 +1,5 @@
 """
-Job Manager - Manages audiobook generation jobs that persist for 24 hours.
+Job Manager - Manages audiobook generation jobs that persist for 1 week.
 Allows users to reconnect and retrieve their job results.
 """
 
@@ -21,6 +21,36 @@ class JobStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    STALLED = "stalled"  # Job stopped unexpectedly but can be resumed
+
+
+@dataclass
+class JobCheckpoint:
+    """Checkpoint data for resumable jobs."""
+    total_lines: int = 0
+    lines_completed: int = 0
+    current_chapter_index: int = 0
+    chapter_files: List[str] = None
+    chapter_line_map: Dict[str, List[int]] = None
+    book_file_path: str = ""
+    add_emotion_tags: bool = False
+    reference_audio_path: str = ""
+    temp_audio_dir: str = "temp_audio"
+    
+    def __post_init__(self):
+        if self.chapter_files is None:
+            self.chapter_files = []
+        if self.chapter_line_map is None:
+            self.chapter_line_map = {}
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "JobCheckpoint":
+        if data is None:
+            return None
+        return cls(**data)
 
 
 @dataclass
@@ -38,13 +68,35 @@ class Job:
     expires_at: str
     output_file: Optional[str] = None
     error_message: Optional[str] = None
+    # Checkpoint support for resumable jobs
+    checkpoint: Optional[Dict[str, Any]] = None
+    last_activity: Optional[str] = None  # ISO timestamp of last activity
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Job":
+        # Handle old jobs without new fields
+        if 'checkpoint' not in data:
+            data['checkpoint'] = None
+        if 'last_activity' not in data:
+            data['last_activity'] = data.get('updated_at')
         return cls(**data)
+    
+    def get_checkpoint(self) -> Optional[JobCheckpoint]:
+        """Get checkpoint as a JobCheckpoint object."""
+        if self.checkpoint:
+            return JobCheckpoint.from_dict(self.checkpoint)
+        return None
+    
+    def is_resumable(self) -> bool:
+        """Check if this job can be resumed."""
+        return (
+            self.status == JobStatus.STALLED.value and 
+            self.checkpoint is not None and
+            self.checkpoint.get('lines_completed', 0) > 0
+        )
 
 
 class JobManager:
@@ -100,7 +152,7 @@ class JobManager:
             print(f"Error saving jobs: {e}")
     
     def _cleanup_expired_jobs(self):
-        """Remove jobs that have expired (older than 24 hours)."""
+        """Remove jobs that have expired (older than 1 week)."""
         now = datetime.now()
         expired_jobs = []
         
@@ -161,10 +213,69 @@ class JobManager:
     def update_job_progress(self, job_id: str, progress: str):
         """Update job progress message."""
         if job_id in self._jobs:
+            now = datetime.now().isoformat()
             self._jobs[job_id].progress = progress
-            self._jobs[job_id].updated_at = datetime.now().isoformat()
+            self._jobs[job_id].updated_at = now
+            self._jobs[job_id].last_activity = now
             self._jobs[job_id].status = JobStatus.IN_PROGRESS.value
             self._save_jobs()
+    
+    def update_job_checkpoint(self, job_id: str, checkpoint: JobCheckpoint):
+        """Update job checkpoint for resume capability."""
+        if job_id in self._jobs:
+            now = datetime.now().isoformat()
+            self._jobs[job_id].checkpoint = checkpoint.to_dict()
+            self._jobs[job_id].last_activity = now
+            self._jobs[job_id].updated_at = now
+            self._save_jobs()
+    
+    def mark_job_stalled(self, job_id: str):
+        """Mark a job as stalled (can be resumed)."""
+        if job_id in self._jobs:
+            job = self._jobs[job_id]
+            if job.status == JobStatus.IN_PROGRESS.value and job.checkpoint:
+                checkpoint = job.get_checkpoint()
+                lines_done = checkpoint.lines_completed if checkpoint else 0
+                total_lines = checkpoint.total_lines if checkpoint else 0
+                pct = (lines_done / total_lines * 100) if total_lines > 0 else 0
+                
+                job.status = JobStatus.STALLED.value
+                job.progress = f"⏸️ Stalled at {pct:.1f}% ({lines_done}/{total_lines} lines) - Click Resume to continue"
+                job.updated_at = datetime.now().isoformat()
+                self._save_jobs()
+                return True
+        return False
+    
+    def check_for_stalled_jobs(self, stall_timeout_seconds: int = 300):
+        """Check for jobs that have stalled (no activity for timeout period)."""
+        now = datetime.now()
+        stalled_jobs = []
+        
+        for job_id, job in self._jobs.items():
+            if job.status == JobStatus.IN_PROGRESS.value:
+                try:
+                    last_activity = datetime.fromisoformat(job.last_activity or job.updated_at)
+                    elapsed = (now - last_activity).total_seconds()
+                    if elapsed > stall_timeout_seconds:
+                        if self.mark_job_stalled(job_id):
+                            stalled_jobs.append(job_id)
+                            print(f"⏸️ Job {job_id} marked as stalled (no activity for {elapsed:.0f}s)")
+                except Exception as e:
+                    print(f"Error checking job {job_id} for stall: {e}")
+        
+        return stalled_jobs
+    
+    def prepare_job_for_resume(self, job_id: str) -> bool:
+        """Prepare a stalled job for resumption."""
+        if job_id in self._jobs:
+            job = self._jobs[job_id]
+            if job.status == JobStatus.STALLED.value and job.checkpoint:
+                job.status = JobStatus.PENDING.value
+                job.progress = "🔄 Ready to resume..."
+                job.updated_at = datetime.now().isoformat()
+                self._save_jobs()
+                return True
+        return False
     
     def complete_job(self, job_id: str, output_file: str):
         """Mark a job as completed with the output file path."""
@@ -217,7 +328,8 @@ class JobManager:
                 JobStatus.PENDING.value: "⏳",
                 JobStatus.IN_PROGRESS.value: "🔄",
                 JobStatus.COMPLETED.value: "✅",
-                JobStatus.FAILED.value: "❌"
+                JobStatus.FAILED.value: "❌",
+                JobStatus.STALLED.value: "⏸️"
             }.get(job.status, "❓")
             
             # Calculate time remaining
@@ -248,7 +360,8 @@ def format_job_for_table(job: Job) -> List[Any]:
         JobStatus.PENDING.value: "⏳ Pending",
         JobStatus.IN_PROGRESS.value: "🔄 In Progress",
         JobStatus.COMPLETED.value: "✅ Completed",
-        JobStatus.FAILED.value: "❌ Failed"
+        JobStatus.FAILED.value: "❌ Failed",
+        JobStatus.STALLED.value: "⏸️ Stalled (Resumable)"
     }.get(job.status, job.status)
     
     # Calculate time remaining

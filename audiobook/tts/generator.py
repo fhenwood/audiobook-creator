@@ -211,7 +211,7 @@ def validate_book_for_m4b_generation(book_path):
     except Exception as e:
         return False, f"Unexpected error during book validation: {str(e)}", None
 
-async def generate_audio_with_single_voice(output_format, narrator_voice, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False):
+async def generate_audio_with_single_voice(output_format, narrator_voice, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False, job_id=None, resume_checkpoint=None):
     # Read the text from the file
     """
     Generate an audiobook using a single voice for narration and dialogues.
@@ -227,14 +227,22 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
         generate_m4b_audiobook_file (bool, optional): Flag to determine whether to generate an M4B file. Defaults to False.
         book_path (str, optional): The file path for the book to be used in M4B creation. Defaults to an empty string.
         add_emotion_tags (bool, optional): Whether to use pre-applied emotion tags in the audiobook. Defaults to False.
+        job_id (str, optional): Job ID for checkpoint saving. Defaults to None.
+        resume_checkpoint (dict, optional): Checkpoint data for resuming a job. Defaults to None.
 
     Yields:
         str: Progress updates as the audiobook generation progresses through loading text, generating audio,
              organizing by chapters, assembling chapters, and post-processing steps.
     """
+    # Import job manager for checkpoint saving (only if job_id provided)
+    if job_id:
+        from audiobook.utils.job_manager import job_manager, JobCheckpoint
     
-    # Early validation for M4B generation
-    if generate_m4b_audiobook_file:
+    # Determine if we're resuming
+    is_resuming = resume_checkpoint is not None
+    
+    # Early validation for M4B generation (skip if resuming - already validated)
+    if generate_m4b_audiobook_file and not is_resuming:
         yield "Validating book file for M4B audiobook generation..."
         is_valid, error_message, metadata = validate_book_for_m4b_generation(book_path)
         
@@ -242,6 +250,26 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
             raise ValueError(f"❌ Book validation failed: {error_message}")
             
         yield f"✅ Book validation successful! Title: {metadata.get('Title', 'Unknown')}, Author: {metadata.get('Author(s)', 'Unknown')}"
+        
+        # Copy book file to persistent location for resume capability
+        if book_path and os.path.exists(book_path):
+            import shutil
+            book_filename = os.path.basename(book_path)
+            persistent_book_path = os.path.join("generated_audiobooks", f"_temp_{book_filename}")
+            shutil.copy2(book_path, persistent_book_path)
+            book_path = persistent_book_path
+            yield f"📁 Book file copied to persistent storage for resume capability"
+    elif is_resuming and generate_m4b_audiobook_file:
+        # When resuming, check if the book path exists, if not try the persistent copy
+        if not os.path.exists(book_path):
+            # Try to find the persistent copy
+            book_filename = os.path.basename(book_path)
+            persistent_book_path = os.path.join("generated_audiobooks", f"_temp_{book_filename}")
+            if os.path.exists(persistent_book_path):
+                book_path = persistent_book_path
+                yield f"📁 Using persistent book file copy for M4B generation"
+            else:
+                yield f"⚠️ Original book file not found - M4B will be created without cover/metadata"
 
     # Check if emotion tags should be used and if they have been pre-applied
     if add_emotion_tags and os.path.exists("tag_added_lines_chunks.txt"):
@@ -270,7 +298,9 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
     temp_audio_dir = "temp_audio"
     temp_line_audio_dir = os.path.join(temp_audio_dir, "line_segments")
 
-    empty_directory(temp_audio_dir)
+    # Only clear directories if NOT resuming
+    if not resume_checkpoint:
+        empty_directory(temp_audio_dir)
 
     os.makedirs(temp_audio_dir, exist_ok=True)
     os.makedirs(temp_line_audio_dir, exist_ok=True)
@@ -288,20 +318,51 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
 
     progress_counter = 0
     
+    # Check for existing line audio files (for resume support)
+    existing_lines = set()
+    if resume_checkpoint or os.path.exists(temp_line_audio_dir):
+        for f in os.listdir(temp_line_audio_dir) if os.path.exists(temp_line_audio_dir) else []:
+            if f.startswith("line_") and f.endswith(".wav"):
+                try:
+                    line_idx = int(f.replace("line_", "").replace(".wav", ""))
+                    existing_lines.add(line_idx)
+                except ValueError:
+                    pass
+    
+    if existing_lines:
+        yield f"🔄 Resuming: Found {len(existing_lines)} previously generated lines"
+        progress_counter = len(existing_lines)
+    
     # For tracking progress with tqdm in an async context
-    progress_bar = tqdm(total=total_size, unit="line", desc="Audio Generation Progress")
+    progress_bar = tqdm(total=total_size, unit="line", desc="Audio Generation Progress", initial=progress_counter)
     
     # Maps chapters to their line indices
     chapter_line_map = {}
     
+    # Checkpoint save interval (save every N lines)
+    CHECKPOINT_INTERVAL = 50
+    last_checkpoint_count = progress_counter
+    
     async def process_single_line(line_index, line):
         async with semaphore:
-            nonlocal progress_counter
+            nonlocal progress_counter, last_checkpoint_count
 
             if not line or is_only_punctuation(line):
                 progress_bar.update(1)
                 progress_counter += 1
                 return None
+            
+            # Check if this line was already generated (resume support)
+            line_audio_path = os.path.join(temp_line_audio_dir, f"line_{line_index:06d}.wav")
+            if line_index in existing_lines and os.path.exists(line_audio_path):
+                # Line already generated, skip
+                progress_bar.update(1)
+                progress_counter += 1
+                return {
+                    "index": line_index,
+                    "is_chapter_heading": check_if_chapter_heading(line),
+                    "line": line,
+                }
                 
             # Split the line into annotated parts
             annotated_parts = split_and_annotate_text(line)
@@ -360,12 +421,23 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
                 return None
             
             # Write this line's audio to a temporary file
-            line_audio_path = os.path.join(temp_line_audio_dir, f"line_{line_index:06d}.wav")
             combined_audio.export(line_audio_path, format="wav")
             
             # Update progress bar
             progress_bar.update(1)
             progress_counter += 1
+            
+            # Save checkpoint periodically
+            if job_id and (progress_counter - last_checkpoint_count) >= CHECKPOINT_INTERVAL:
+                last_checkpoint_count = progress_counter
+                checkpoint = JobCheckpoint(
+                    total_lines=total_size,
+                    lines_completed=progress_counter,
+                    book_file_path=book_path,
+                    add_emotion_tags=add_emotion_tags,
+                    temp_audio_dir=temp_audio_dir
+                )
+                job_manager.update_job_checkpoint(job_id, checkpoint)
             
             return {
                 "index": line_index,
@@ -1098,7 +1170,7 @@ async def generate_audio_with_multiple_voices(output_format, narrator_gender, ge
         convert_audio_file_formats("m4a", output_format, "generated_audiobooks", "audiobook")
         yield f"Audiobook in {output_format} format created successfully"
 
-async def process_audiobook_generation(voice_option, narrator_voice, output_format, book_path, add_emotion_tags=False, tts_engine="Orpheus", reference_audio_path=None):
+async def process_audiobook_generation(voice_option, narrator_voice, output_format, book_path, add_emotion_tags=False, tts_engine="Orpheus", reference_audio_path=None, job_id=None, resume_checkpoint=None):
     """
     Process audiobook generation with single voice narration.
     
@@ -1110,6 +1182,8 @@ async def process_audiobook_generation(voice_option, narrator_voice, output_form
         add_emotion_tags: Whether to use pre-processed emotion tags - Orpheus only
         tts_engine: TTS engine to use ("Orpheus" or "Chatterbox")
         reference_audio_path: Path to reference audio for zero-shot cloning - Chatterbox only
+        job_id: Job ID for checkpoint saving and resume support
+        resume_checkpoint: Checkpoint data for resuming a stalled job
     """
     generate_m4b_audiobook_file = False
 
@@ -1133,9 +1207,20 @@ async def process_audiobook_generation(voice_option, narrator_voice, output_form
             if not is_audio_generator_api_up:
                 raise Exception(message)
             
-            yield "\n🎧 Generating audiobook with Orpheus TTS..."
+            if resume_checkpoint:
+                yield "\n🔄 Resuming audiobook generation with Orpheus TTS..."
+            else:
+                yield "\n🎧 Generating audiobook with Orpheus TTS..."
             await asyncio.sleep(1)
-            async for line in generate_audio_with_single_voice(output_format.lower(), narrator_voice, generate_m4b_audiobook_file, book_path, add_emotion_tags):
+            async for line in generate_audio_with_single_voice(
+                output_format.lower(), 
+                narrator_voice, 
+                generate_m4b_audiobook_file, 
+                book_path, 
+                add_emotion_tags,
+                job_id=job_id,
+                resume_checkpoint=resume_checkpoint
+            ):
                 yield line
 
         yield f"\n🎧 Audiobook is generated! You can now download it in the Download section below."
