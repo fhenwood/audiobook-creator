@@ -76,48 +76,33 @@ services:
       - LLM_MODEL_FILE=${LLM_MODEL_FILE}
       - LLM_HF_REPO=${LLM_HF_REPO}
 
-  # Main audiobook creator app
+  # Main audiobook creator app (includes Gradio UI + Orpheus TTS API)
   audiobook_creator:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "7860:7860"
+      - "7860:7860"   # Gradio Web UI
+      - "8880:8880"   # Orpheus TTS API
     volumes:
       - ./generated_audiobooks:/app/generated_audiobooks
       - ./audio_samples:/app/audio_samples
       - ./static_files:/app/static_files
+      - ./orpheus_tts/outputs:/app/orpheus_tts/outputs
+      - orpheus_snac_models:/root/.cache/huggingface
+      - chatterbox_models:/root/.cache/chatterbox
     environment:
-      - ORPHEUS_API_URL=http://orpheus_tts:8880
-      - LLM_API_URL=http://llm_server:8000/v1
+      - TTS_BASE_URL=http://localhost:8880/v1
+      - ORPHEUS_API_URL=http://orpheus_llama:5006/v1/completions
+      - LLM_BASE_URL=http://llm_server:8000/v1
       - GRADIO_SERVER_NAME=0.0.0.0
       - FORCE_CPU=${FORCE_CPU:-false}
     depends_on:
       model_downloader:
         condition: service_completed_successfully
-      orpheus_tts:
+      orpheus_llama:
         condition: service_started
       llm_server:
-        condition: service_started
-    restart: unless-stopped
-
-  # Orpheus TTS service - generates audio from tokens
-  orpheus_tts:
-    build:
-      context: ./orpheus_tts
-      dockerfile: Dockerfile
-    ports:
-      - "8880:8880"
-    volumes:
-      - orpheus_snac_models:/root/.cache/huggingface
-      - ./orpheus_tts/outputs:/app/outputs
-    environment:
-      - ORPHEUS_API_URL=http://orpheus_llama:5006/v1/completions
-      - FORCE_CPU=${FORCE_CPU:-false}
-    depends_on:
-      model_downloader:
-        condition: service_completed_successfully
-      orpheus_llama:
         condition: service_started
     restart: unless-stopped
 
@@ -161,4 +146,5 @@ volumes:
   orpheus_snac_models:
   orpheus_gguf_models:
   llm_models:
+  chatterbox_models:
   audiobook_output:

@@ -9,6 +9,10 @@
 # ============================================================================
 
 services:
+  audiobook_creator:
+    environment:
+      - FORCE_CPU=true
+
   orpheus_llama:
     environment:
       - LLAMA_ARG_N_GPU_LAYERS=0
@@ -18,7 +22,3 @@ services:
     environment:
       - LLAMA_ARG_N_GPU_LAYERS=0
     deploy: {}  # Remove GPU reservation
-
-  orpheus_tts:
-    environment:
-      - FORCE_CPU=true

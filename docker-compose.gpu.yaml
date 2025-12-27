@@ -10,6 +10,15 @@
 # ============================================================================
 
 services:
+  audiobook_creator:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   orpheus_llama:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
     deploy:
@@ -22,15 +31,6 @@ services:
 
   llm_server:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
-  orpheus_tts:
     deploy:
       resources:
         reservations:

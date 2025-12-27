@@ -22,11 +22,10 @@ import traceback
 import tempfile
 from fastapi import FastAPI
 from openai import OpenAI
-from book_to_txt import process_book_and_extract_text, save_book
-from identify_characters_and_output_book_to_jsonl import process_book_and_identify_characters
-from generate_audiobook import process_audiobook_generation, validate_book_for_m4b_generation, sanitize_filename
-from add_emotion_tags import process_emotion_tags
-from utils.voice_mapping import get_available_voices, get_voice_list
+from audiobook.core.text_extraction import process_book_and_extract_text, save_book
+from audiobook.tts.generator import process_audiobook_generation, validate_book_for_m4b_generation, sanitize_filename
+from audiobook.core.emotion_tags import process_emotion_tags
+from audiobook.tts.voice_mapping import get_available_voices, get_voice_list
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -45,6 +44,14 @@ css = """
 
 app = FastAPI()
 
+def extract_title_from_filename(book_file):
+    """Extract book title from uploaded filename without extension"""
+    if book_file is None:
+        return ""
+    filename = os.path.basename(book_file.name)
+    title = os.path.splitext(filename)[0]
+    return sanitize_filename(title)
+
 def validate_book_upload(book_file, book_title):
     """Validate book upload and return a notification"""
     if book_file is None:
@@ -58,7 +65,7 @@ def validate_book_upload(book_file, book_title):
     yield book_title
     return gr.Info(f"Book '{book_title}' ready for processing.", duration=5)
 
-def text_extraction_wrapper(book_file, text_decoding_option):
+def text_extraction_wrapper(book_file):
     """Wrapper for text extraction with validation and progress updates"""
     if book_file is None:
         yield None
@@ -66,8 +73,8 @@ def text_extraction_wrapper(book_file, text_decoding_option):
     
     try:
         last_output = None
-        # Pass through all yield values from the original function
-        for output in process_book_and_extract_text(book_file, text_decoding_option):
+        # Pass through all yield values from the original function (always using calibre)
+        for output in process_book_and_extract_text(book_file):
             last_output = output
             yield output  # Yield each progress update
         
@@ -99,34 +106,13 @@ def save_book_wrapper(text_content):
         traceback.print_exc()
         return gr.Warning(f"Error saving book: {str(e)}")
 
-async def identify_characters_wrapper():
-    """Wrapper for character identification with validation and progress updates"""
-
-    try:
-        last_output = None
-        # Pass through all yield values from the original function
-        async for output in process_book_and_identify_characters():
-            last_output = output
-            yield output  # Yield each progress update
-        
-        # Final yield with success notification
-        yield gr.Info("Character identification complete! You can now add emotion tags or proceed to audiobook generation.", duration=5)
-        yield last_output
-        return
-    except Exception as e:
-        print(e)
-        traceback.print_exc()
-        yield gr.Warning(f"Error identifying characters: {str(e)}")
-        yield None
-        return
-
-async def add_emotion_tags_wrapper(characters_identified_state):
+async def add_emotion_tags_wrapper():
     """Wrapper for emotion tags processing with validation and progress updates"""
 
     try:
         last_output = None
         # Use the unified emotion tags processing function (Orpheus TTS only)
-        async for output in process_emotion_tags(characters_identified_state):
+        async for output in process_emotion_tags(False):
             last_output = output
             yield output
 
@@ -141,7 +127,7 @@ async def add_emotion_tags_wrapper(characters_identified_state):
         yield None
         return
 
-async def generate_audiobook_wrapper(narrator_gender, output_format, book_file, emotion_tags_processed_state, book_title):
+async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, emotion_tags_processed_state, book_title, reference_audio=None):
     """Wrapper for audiobook generation with validation and progress updates"""
     if book_file is None:
         yield gr.Warning("Please upload a book file first."), None
@@ -151,6 +137,14 @@ async def generate_audiobook_wrapper(narrator_gender, output_format, book_file, 
         yield gr.Warning("Please select an output format."), None
         yield None, None
         return
+    
+    # Validate Chatterbox requirements
+    if tts_engine == "Chatterbox":
+        if reference_audio is None or not os.path.exists(reference_audio):
+            yield gr.Warning("Please upload a reference audio sample for Chatterbox voice cloning."), None
+            yield None, None
+            return
+        yield gr.Info("🎤 Using Chatterbox with zero-shot voice cloning"), None
     
     # Early validation for M4B format
     if output_format == "M4B (Chapters & Cover)":
@@ -164,19 +158,27 @@ async def generate_audiobook_wrapper(narrator_gender, output_format, book_file, 
             
         yield gr.Info(f"✅ Book validation successful! Title: {metadata.get('Title', 'Unknown')}, Author: {metadata.get('Author(s)', 'Unknown')}"), None
     
-    # Use session state to determine if emotion tags should be used
-    add_emotion_tags = emotion_tags_processed_state
+    # Use session state to determine if emotion tags should be used (Orpheus only)
+    add_emotion_tags = emotion_tags_processed_state if tts_engine == "Orpheus" else False
     
     if add_emotion_tags:
         yield gr.Info("🎭 Using emotion tags (processed in current session)"), None
-    else:
+    elif tts_engine == "Orpheus":
         yield gr.Info("📖 Using standard narration"), None
     
     try:
         last_output = None
         audiobook_path = None
-        # Pass through all yield values from the original function (voice_type is ignored, always single voice)
-        async for output in process_audiobook_generation("Single Voice", narrator_gender, output_format, book_file, add_emotion_tags):
+        # Pass through all yield values from the original function
+        async for output in process_audiobook_generation(
+            "Single Voice", 
+            narrator_voice, 
+            output_format, 
+            book_file, 
+            add_emotion_tags,
+            tts_engine=tts_engine,
+            reference_audio_path=reference_audio
+        ):
             last_output = output
             yield output, None  # Yield each progress update without file path
         
@@ -207,22 +209,50 @@ def update_emotion_tags_status_and_state():
     # Return both the updated status display and set session state to True
     return gr.update(value="✅ Emotion tags processed - will be used in audiobook"), True
 
-def update_characters_identified_state():
-    """Set characters_identified state to True after character identification"""
-    return True
-
-def generate_voice_sample(voice_name, sample_text):
+def generate_voice_sample(tts_engine, voice_name, sample_text, reference_audio):
     """Generate a voice sample for the selected voice with custom text."""
     if not sample_text or not sample_text.strip():
         return None, "Please enter some text to generate a sample."
     
+    # Check if using Chatterbox (requires reference audio)
+    if tts_engine == "Chatterbox":
+        if reference_audio is None or not os.path.exists(reference_audio):
+            return None, "❌ Please upload a reference audio sample for Chatterbox voice cloning."
+        
+        try:
+            # Import Chatterbox (zero-shot voice cloning)
+            import torchaudio as ta
+            import torch
+            from chatterbox import ChatterboxTTS
+            
+            # Determine device
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            # Load Chatterbox model
+            model = ChatterboxTTS.from_pretrained(device=device)
+            
+            # Generate with reference audio for zero-shot cloning
+            wav = model.generate(sample_text.strip(), audio_prompt_path=reference_audio)
+            
+            # Save output
+            sample_path = "static_files/voice_samples/chatterbox_sample.wav"
+            ta.save(sample_path, wav, model.sr)
+            
+            return sample_path, f"✅ Generated sample using Chatterbox zero-shot voice cloning"
+        except ImportError:
+            return None, "❌ Chatterbox is not installed. Run: pip install chatterbox-tts"
+        except Exception as e:
+            traceback.print_exc()
+            return None, f"❌ Error generating Chatterbox sample: {str(e)}"
+    
+    # Orpheus TTS
     if not voice_name:
         return None, "Please select a voice."
     
     try:
         client = OpenAI(base_url=TTS_BASE_URL, api_key=TTS_API_KEY)
         
-        # Generate audio sample
+        # Generate audio sample with Orpheus
         with client.audio.speech.with_streaming_response.create(
             model="orpheus",
             voice=voice_name,
@@ -231,11 +261,10 @@ def generate_voice_sample(voice_name, sample_text):
             input=sample_text.strip(),
             timeout=120
         ) as response:
-            # Save to temp file
             sample_path = f"static_files/voice_samples/{voice_name}_sample.wav"
             response.stream_to_file(sample_path)
             
-        return sample_path, f"✅ Generated sample for voice: {voice_name}"
+        return sample_path, f"✅ Generated sample for Orpheus voice: {voice_name}"
     except Exception as e:
         traceback.print_exc()
         return None, f"❌ Error generating sample: {str(e)}"
@@ -247,38 +276,59 @@ def get_voice_choices():
 
 with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     gr.Markdown("# 📖 Audiobook Creator")
-    gr.Markdown("Create professional audiobooks from your ebooks using Orpheus TTS.")
+    gr.Markdown("Create professional audiobooks from your ebooks using Orpheus TTS or Chatterbox (with zero-shot voice cloning).")
+    
+    # Get voice choices once for use in all tabs
+    voice_choices = get_voice_list()
+    voice_descriptions = get_available_voices()
     
     # Session state to track if emotion tags were processed
     emotion_tags_processed = gr.State(False)
-
-    # Session state to track if characters were identified
-    characters_identified = gr.State(False)
     
     with gr.Tabs():
         # ==================== Voice Sampling Tab ====================
         with gr.TabItem("🎙️ Voice Sampling"):
-            gr.Markdown("### Preview Orpheus TTS Voices")
+            gr.Markdown("### Preview TTS Voices")
             gr.Markdown("Test different voices with your own text before creating an audiobook.")
             
             with gr.Row():
                 with gr.Column(scale=2):
-                    voice_choices = get_voice_list()
-                    voice_descriptions = get_available_voices()
-                    
-                    voice_selector = gr.Dropdown(
-                        choices=voice_choices,
-                        label="Select Voice",
-                        value="tara",
-                        info="Choose a voice to preview"
+                    # TTS Engine selector
+                    tts_engine_sampling = gr.Radio(
+                        choices=["Orpheus", "Chatterbox"],
+                        label="TTS Engine",
+                        value="Orpheus",
+                        info="Orpheus: Predefined voices with emotion tags. Chatterbox: Zero-shot voice cloning."
                     )
                     
-                    # Show voice description
-                    voice_description = gr.Textbox(
-                        label="Voice Description",
-                        value=voice_descriptions.get("tara", ""),
-                        interactive=False
-                    )
+                    # Orpheus voice selector (visible by default)
+                    with gr.Group(visible=True) as orpheus_voice_group:
+                        voice_selector = gr.Dropdown(
+                            choices=voice_choices,
+                            label="Select Voice",
+                            value="zac",
+                            info="Choose an Orpheus voice to preview"
+                        )
+                        
+                        # Show voice description
+                        voice_description = gr.Textbox(
+                            label="Voice Description",
+                            value=voice_descriptions.get("zac", ""),
+                            interactive=False
+                        )
+                    
+                    # Chatterbox zero-shot reference audio (hidden by default)
+                    with gr.Group(visible=False) as chatterbox_voice_group:
+                        gr.Markdown("""🎤 **Zero-Shot Voice Cloning with Chatterbox**
+                        
+                        Upload a ~10 second reference audio sample to clone any voice.
+                        """)
+                        reference_audio_sampling = gr.Audio(
+                            label="Reference Audio Sample (Required for Chatterbox)",
+                            type="filepath",
+                            sources=["upload", "microphone"],
+                            interactive=True
+                        )
                     
                     sample_text = gr.Textbox(
                         label="Sample Text",
@@ -305,7 +355,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                     )
                     
                     gr.Markdown("""
-                    ### Available Voices
+                    ### Orpheus Voices
                     
                     **Female Voices:**
                     - **Tara** - Warm, expressive narrator
@@ -318,7 +368,27 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                     - **Leo** - Deep, authoritative
                     - **Dan** - Friendly, conversational
                     - **Zac** - Strong, confident narrator
+                    
+                    ---
+                    ### Chatterbox
+                    
+                    Zero-shot voice cloning - upload any ~10 second audio sample to clone that voice!
+                    
+                    Supports paralinguistic tags: `[laugh]`, `[chuckle]`, `[cough]`, etc.
                     """)
+            
+            # TTS engine change handler - toggle visibility of voice groups
+            def update_tts_engine_visibility(tts_engine):
+                if tts_engine == "Orpheus":
+                    return gr.update(visible=True), gr.update(visible=False)
+                else:  # Chatterbox
+                    return gr.update(visible=False), gr.update(visible=True)
+            
+            tts_engine_sampling.change(
+                update_tts_engine_visibility,
+                inputs=[tts_engine_sampling],
+                outputs=[orpheus_voice_group, chatterbox_voice_group]
+            )
             
             # Voice selector change handler
             def update_voice_description(voice_name):
@@ -334,7 +404,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
             # Generate sample button handler
             generate_sample_btn.click(
                 generate_voice_sample,
-                inputs=[voice_selector, sample_text],
+                inputs=[tts_engine_sampling, voice_selector, sample_text, reference_audio_sampling],
                 outputs=[audio_preview, sample_status]
             )
         
@@ -354,141 +424,157 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                         label="Upload Book"
                     )
                     
-                    text_decoding_option = gr.Radio(
-                        ["textract", "calibre"], 
-                        label="Text Extraction Method", 
-                        value="textract",
-                        info="Use calibre for better formatted results, wider compatibility for ebook formats. You can try both methods and choose based on the output result."
-                    )
-                    
                     validate_btn = gr.Button("Validate Book", variant="primary")
 
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown('<div class="step-heading">✂️ Step 2: Extract & Edit Content</div>')
-            
-            convert_btn = gr.Button("Extract Text", variant="primary")
-            
-            with gr.Accordion("Editing Tips", open=True):
-                gr.Markdown("""
-                * Remove unwanted sections: Table of Contents, About the Author, Acknowledgements
-                * Fix formatting issues or OCR errors
-                * Check for chapter breaks and paragraph formatting
-                """)
-            
-            # Navigation buttons for the textbox
             with gr.Row():
-                top_btn = gr.Button("↑ Go to Top", size="sm", variant="secondary")
-                bottom_btn = gr.Button("↓ Go to Bottom", size="sm", variant="secondary")
-            
-            text_output = gr.Textbox(
-                label="Edit Book Content", 
-                placeholder="Extracted text will appear here for editing",
-                interactive=True, 
-                lines=15,
-                elem_id="text_editor"
-            )
-            
-            save_btn = gr.Button("Save Edited Text", variant="primary")
+                with gr.Column():
+                    gr.Markdown('<div class="step-heading">✂️ Step 2: Extract & Edit Content</div>')
+                    
+                    convert_btn = gr.Button("Extract Text", variant="primary")
+                    
+                    with gr.Accordion("Editing Tips", open=True):
+                        gr.Markdown("""
+                        * Remove unwanted sections: Table of Contents, About the Author, Acknowledgements
+                        * Fix formatting issues or OCR errors
+                        * Check for chapter breaks and paragraph formatting
+                        """)
+                    
+                    # Navigation buttons for the textbox
+                    with gr.Row():
+                        top_btn = gr.Button("↑ Go to Top", size="sm", variant="secondary")
+                        bottom_btn = gr.Button("↓ Go to Bottom", size="sm", variant="secondary")
+                    
+                    text_output = gr.Textbox(
+                        label="Edit Book Content", 
+                        placeholder="Extracted text will appear here for editing",
+                        interactive=True, 
+                        lines=15,
+                        elem_id="text_editor"
+                    )
+                    
+                    save_btn = gr.Button("Save Edited Text", variant="primary")
 
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown('<div class="step-heading">🧩 Step 3: Character Identification (Optional - Requires LLM)</div>')
-            
-            identify_btn = gr.Button("Identify Characters", variant="primary")
-            
-            with gr.Accordion("Why Identify Characters?", open=True):
-                gr.Markdown("""
-                * Improves multi-voice narration by assigning different voices to characters
-                * Creates more engaging audiobooks with distinct character voices
-                * Skip this step if you prefer single-voice narration
-                """)
-                
-            character_output = gr.Textbox(
-                label="Character Identification Progress", 
-                placeholder="Character identification progress will be shown here",
-                interactive=False,
-                lines=3
-            )
-
-    # Add emotion tags step (always visible since we use Orpheus TTS)
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown('<div class="step-heading">🎭 Step 3.5: Add Emotion Tags (Optional - Requires LLM)</div>')
-            
-            emotion_tags_btn = gr.Button("Add Emotion Tags", variant="primary")
-            
-            with gr.Accordion("What are Emotion Tags?", open=True):
-                gr.Markdown("""
-                **Emotion Tags enhance your audiobook by adding natural expressions:**
-
-                * **`<laugh>`** - For laughter or when text indicates laughing
-                * **`<chuckle>`** - For light laughter or chuckling sounds
-                * **`<sigh>`** - For sighing or expressions of resignation/relief
-                * **`<cough>`** - For coughing sounds or throat clearing
-                * **`<sniffle>`** - For sniffling or nasal sounds (emotion, cold, etc.)
-                * **`<groan>`** - For groaning sounds expressing discomfort/frustration
-                * **`<yawn>`** - For yawning or expressions of tiredness
-                * **`<gasp>`** - For gasping sounds of surprise/shock
-                
-                These tags are automatically placed based on the text context using an LLM.
-                """)
-                
-            emotion_tags_output = gr.Textbox(
-                label="Emotion Tags Processing Progress", 
-                placeholder="Emotion tags processing progress will be shown here",
-                interactive=False,
-                lines=3
-            )
-
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown('<div class="step-heading">🎧 Step 4: Generate Audiobook</div>')
-            
+            # Add emotion tags step (always visible since we use Orpheus TTS)
             with gr.Row():
-                narrator_gender = gr.Radio(
-                    ["male", "female"], 
-                    label="Narrator Voice",
-                    value="female",
-                    info="Choose the narrator voice gender"
-                )
-                
-                output_format = gr.Dropdown(
-                    ["M4B (Chapters & Cover)", "AAC", "M4A", "MP3", "WAV", "OPUS", "FLAC", "PCM"], 
-                    label="Output Format",
-                    value="M4B (Chapters & Cover)",
-                    info="M4B supports chapters and cover art"
-                )
-            
-            # Emotion tags status display (always visible since we only use Orpheus)
-            with gr.Group() as emotion_tags_group:
-                emotion_tags_status_display = gr.Radio(
-                    choices=["✅ Emotion tags processed - will be used in audiobook", "❌ No emotion tags - standard narration will be used"],
-                    value="❌ No emotion tags - standard narration will be used",  # Always start with default
-                    label="Emotion Tags Status",
-                    interactive=False,
-                    info="This will update automatically when you process emotion tags in Step 3.5"
-                )
-            
-            generate_btn = gr.Button("Generate Audiobook", variant="primary")
-            
-            audio_output = gr.Textbox(
-                label="Generation Progress", 
-                placeholder="Generation progress will be shown here",
-                interactive=False,
-                lines=3
-            )
-            
-            # Add a new File component for downloading the audiobook
-            with gr.Group(visible=False) as download_box:
-                gr.Markdown("### 📥 Download Your Audiobook")
-                audiobook_file = gr.File(
-                    label="Download Generated Audiobook",
-                    interactive=False,
-                    type="filepath"
-                )
+                with gr.Column():
+                    gr.Markdown('<div class="step-heading">🎭 Step 3: Add Emotion Tags (Optional - Requires LLM)</div>')
+                    
+                    emotion_tags_btn = gr.Button("Add Emotion Tags", variant="primary")
+                    
+                    with gr.Accordion("What are Emotion Tags?", open=True):
+                        gr.Markdown("""
+                        **Emotion Tags enhance your audiobook by adding natural expressions:**
+
+                        * **`<laugh>`** - For laughter or when text indicates laughing
+                        * **`<chuckle>`** - For light laughter or chuckling sounds
+                        * **`<sigh>`** - For sighing or expressions of resignation/relief
+                        * **`<cough>`** - For coughing sounds or throat clearing
+                        * **`<sniffle>`** - For sniffling or nasal sounds (emotion, cold, etc.)
+                        * **`<groan>`** - For groaning sounds expressing discomfort/frustration
+                        * **`<yawn>`** - For yawning or expressions of tiredness
+                        * **`<gasp>`** - For gasping sounds of surprise/shock
+                        
+                        These tags are automatically placed based on the text context using an LLM.
+                        """)
+                        
+                    emotion_tags_output = gr.Textbox(
+                        label="Emotion Tags Processing Progress", 
+                        placeholder="Emotion tags processing progress will be shown here",
+                        interactive=False,
+                        lines=3
+                    )
+
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown('<div class="step-heading">🎧 Step 4: Generate Audiobook</div>')
+                    
+                    # TTS Engine selector for audiobook generation
+                    tts_engine_audiobook = gr.Radio(
+                        choices=["Orpheus", "Chatterbox"],
+                        label="TTS Engine",
+                        value="Orpheus",
+                        info="Orpheus: Predefined voices with emotion tags. Chatterbox: Zero-shot voice cloning."
+                    )
+                    
+                    with gr.Row():
+                        # Orpheus narrator voice dropdown
+                        narrator_voice = gr.Dropdown(
+                            choices=voice_choices,
+                            label="Narrator Voice (Orpheus)",
+                            value="zac",
+                            info="Select the voice for narration"
+                        )
+                        
+                        output_format = gr.Dropdown(
+                            ["M4B (Chapters & Cover)", "AAC", "M4A", "MP3", "WAV", "OPUS", "FLAC", "PCM"], 
+                            label="Output Format",
+                            value="M4B (Chapters & Cover)",
+                            info="M4B supports chapters and cover art"
+                        )
+                    
+                    # Chatterbox zero-shot reference audio (hidden by default)
+                    with gr.Group(visible=False) as chatterbox_audiobook_group:
+                        gr.Markdown("""🎤 **Zero-Shot Voice Cloning with Chatterbox**
+                        
+                        Upload a ~10 second reference audio sample to clone any voice for your audiobook.
+                        """)
+                        reference_audio_audiobook = gr.Audio(
+                            label="Reference Audio Sample (Required for Chatterbox)",
+                            type="filepath",
+                            sources=["upload", "microphone"],
+                            interactive=True
+                        )
+                    
+                    # Emotion tags status display (for Orpheus)
+                    with gr.Group() as emotion_tags_group:
+                        emotion_tags_status_display = gr.Radio(
+                            choices=["✅ Emotion tags processed - will be used in audiobook", "❌ No emotion tags - standard narration will be used"],
+                            value="❌ No emotion tags - standard narration will be used",
+                            label="Emotion Tags Status",
+                            interactive=False,
+                            info="This will update automatically when you process emotion tags in Step 3"
+                        )
+                    
+                    generate_btn = gr.Button("Generate Audiobook", variant="primary")
+                    
+                    audio_output = gr.Textbox(
+                        label="Generation Progress", 
+                        placeholder="Generation progress will be shown here",
+                        interactive=False,
+                        lines=3
+                    )
+                    
+                    # Add a new File component for downloading the audiobook
+                    with gr.Group(visible=False) as download_box:
+                        gr.Markdown("### 📥 Download Your Audiobook")
+                        audiobook_file = gr.File(
+                            label="Download Generated Audiobook",
+                            interactive=False,
+                            type="filepath"
+                        )
     
     # Connections with proper handling of Gradio notifications
+    
+    # TTS engine change handler for audiobook tab - toggle visibility
+    def update_audiobook_tts_visibility(tts_engine):
+        if tts_engine == "Orpheus":
+            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=True)
+        else:  # Chatterbox
+            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+    
+    tts_engine_audiobook.change(
+        update_audiobook_tts_visibility,
+        inputs=[tts_engine_audiobook],
+        outputs=[narrator_voice, chatterbox_audiobook_group, emotion_tags_group]
+    )
+    
+    # Auto-fill book title from uploaded filename
+    book_input.change(
+        extract_title_from_filename,
+        inputs=[book_input],
+        outputs=[book_title]
+    )
+    
     validate_btn.click(
         validate_book_upload, 
         inputs=[book_input, book_title], 
@@ -497,7 +583,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     
     convert_btn.click(
         text_extraction_wrapper, 
-        inputs=[book_input, text_decoding_option], 
+        inputs=[book_input], 
         outputs=[text_output],
         queue=True
     )
@@ -509,21 +595,9 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
         queue=True
     )
     
-    identify_btn.click(
-        identify_characters_wrapper,
-        inputs=[],
-        outputs=[character_output],
-        queue=True
-    ).then(
-        # Update characters_identified state after character identification completes
-        update_characters_identified_state,
-        inputs=[],
-        outputs=[characters_identified]
-    )
-    
     emotion_tags_btn.click(
         add_emotion_tags_wrapper,
-        inputs=[characters_identified],
+        inputs=[],
         outputs=[emotion_tags_output],
         queue=True
     ).then(
@@ -536,7 +610,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     # Update the generate_audiobook_wrapper to output both progress text and file path
     generate_btn.click(
         generate_audiobook_wrapper, 
-        inputs=[narrator_gender, output_format, book_input, emotion_tags_processed, book_title], 
+        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, emotion_tags_processed, book_title, reference_audio_audiobook], 
         outputs=[audio_output, audiobook_file],
         queue=True
     ).then(
