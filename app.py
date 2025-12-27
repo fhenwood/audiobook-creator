@@ -26,6 +26,7 @@ from audiobook.core.text_extraction import process_book_and_extract_text, save_b
 from audiobook.tts.generator import process_audiobook_generation, validate_book_for_m4b_generation, sanitize_filename
 from audiobook.core.emotion_tags import process_emotion_tags
 from audiobook.tts.voice_mapping import get_available_voices, get_voice_list
+from audiobook.utils.job_manager import job_manager, JobStatus, get_jobs_dataframe
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -106,69 +107,82 @@ def save_book_wrapper(text_content):
         traceback.print_exc()
         return gr.Warning(f"Error saving book: {str(e)}")
 
-async def add_emotion_tags_wrapper():
-    """Wrapper for emotion tags processing with validation and progress updates"""
-
-    try:
-        last_output = None
-        # Use the unified emotion tags processing function (Orpheus TTS only)
-        async for output in process_emotion_tags(False):
-            last_output = output
-            yield output
-
-        # Final yield with success notification
-        yield gr.Info("Emotion tags added successfully! You can now generate the audiobook.", duration=5)
-        yield last_output
-        return
-    except Exception as e:
-        print(e)
-        traceback.print_exc()
-        yield gr.Warning(f"Error adding emotion tags: {str(e)}")
-        yield None
-        return
-
-async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, emotion_tags_processed_state, book_title, reference_audio=None):
-    """Wrapper for audiobook generation with validation and progress updates"""
+async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, add_emotion_tags_checkbox, book_title, reference_audio=None):
+    """Wrapper for audiobook generation with validation, progress updates, and job tracking.
+    Now includes automatic emotion tag processing if enabled."""
     if book_file is None:
-        yield gr.Warning("Please upload a book file first."), None
-        yield None, None
+        yield gr.Warning("Please upload a book file first."), None, None
+        yield None, None, None
         return
     if not output_format:
-        yield gr.Warning("Please select an output format."), None
-        yield None, None
+        yield gr.Warning("Please select an output format."), None, None
+        yield None, None, None
         return
     
     # Validate Chatterbox requirements
     if tts_engine == "Chatterbox":
         if reference_audio is None or not os.path.exists(reference_audio):
-            yield gr.Warning("Please upload a reference audio sample for Chatterbox voice cloning."), None
-            yield None, None
+            yield gr.Warning("Please upload a reference audio sample for Chatterbox voice cloning."), None, None
+            yield None, None, None
             return
-        yield gr.Info("🎤 Using Chatterbox with zero-shot voice cloning"), None
+        voice_display = "cloned voice"
+    else:
+        voice_display = narrator_voice
+    
+    # Create job for tracking
+    job = job_manager.create_job(
+        book_title=book_title or "Untitled",
+        tts_engine=tts_engine,
+        voice=voice_display,
+        output_format=output_format
+    )
+    job_id = job.job_id
+    
+    if tts_engine == "Chatterbox":
+        yield gr.Info(f"🎤 Job {job_id}: Using Chatterbox with zero-shot voice cloning"), None, job_id
     
     # Early validation for M4B format
     if output_format == "M4B (Chapters & Cover)":
-        yield gr.Info("Validating book file for M4B audiobook generation..."), None
+        job_manager.update_job_progress(job_id, "Validating book file...")
+        yield gr.Info(f"Job {job_id}: Validating book file for M4B audiobook generation..."), None, job_id
         is_valid, error_message, metadata = validate_book_for_m4b_generation(book_file)
         
         if not is_valid:
-            yield gr.Warning(f"❌ Book validation failed: {error_message}"), None
-            yield None, None
+            job_manager.fail_job(job_id, f"Book validation failed: {error_message}")
+            yield gr.Warning(f"❌ Job {job_id}: Book validation failed: {error_message}"), None, job_id
+            yield None, None, job_id
             return
             
-        yield gr.Info(f"✅ Book validation successful! Title: {metadata.get('Title', 'Unknown')}, Author: {metadata.get('Author(s)', 'Unknown')}"), None
+        yield gr.Info(f"✅ Job {job_id}: Book validation successful! Title: {metadata.get('Title', 'Unknown')}"), None, job_id
     
-    # Use session state to determine if emotion tags should be used (Orpheus only)
-    add_emotion_tags = emotion_tags_processed_state if tts_engine == "Orpheus" else False
+    # Determine if emotion tags should be used (Orpheus only)
+    add_emotion_tags = add_emotion_tags_checkbox if tts_engine == "Orpheus" else False
     
+    # If emotion tags enabled, process them first as part of this job
     if add_emotion_tags:
-        yield gr.Info("🎭 Using emotion tags (processed in current session)"), None
+        job_manager.update_job_progress(job_id, "🎭 Processing emotion tags...")
+        yield f"🎭 Job {job_id}: Processing emotion tags (this may take a few minutes)...", None, job_id
+        
+        try:
+            # Run emotion tags processing
+            async for progress in process_emotion_tags(False):
+                job_manager.update_job_progress(job_id, f"🎭 Emotion tags: {str(progress)[:100]}")
+                yield f"🎭 {progress}", None, job_id
+            
+            yield gr.Info(f"✅ Job {job_id}: Emotion tags added successfully!"), None, job_id
+        except Exception as e:
+            job_manager.fail_job(job_id, f"Emotion tags failed: {str(e)}")
+            yield gr.Warning(f"❌ Job {job_id}: Error adding emotion tags: {str(e)}"), None, job_id
+            yield None, None, job_id
+            return
     elif tts_engine == "Orpheus":
-        yield gr.Info("📖 Using standard narration"), None
+        yield gr.Info(f"📖 Job {job_id}: Using standard narration (no emotion tags)"), None, job_id
     
     try:
         last_output = None
         audiobook_path = None
+        job_manager.update_job_progress(job_id, "Starting audiobook generation...")
+        
         # Pass through all yield values from the original function
         async for output in process_audiobook_generation(
             "Single Voice", 
@@ -180,7 +194,10 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
             reference_audio_path=reference_audio
         ):
             last_output = output
-            yield output, None  # Yield each progress update without file path
+            # Update job progress with current output
+            if output:
+                job_manager.update_job_progress(job_id, str(output)[:200])
+            yield output, None, job_id  # Yield each progress update without file path
         
         # Get the correct file extension based on the output format
         generate_m4b_audiobook_file = True if output_format == "M4B (Chapters & Cover)" else False
@@ -190,24 +207,24 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
         audiobook_path = os.path.join("generated_audiobooks", f"audiobook.{file_extension}")
 
         # Rename the audiobook file to the book title
-        os.rename(audiobook_path, os.path.join("generated_audiobooks", f"{book_title}.{file_extension}"))
-        audiobook_path = os.path.join("generated_audiobooks", f"{book_title}.{file_extension}")
+        final_path = os.path.join("generated_audiobooks", f"{book_title}.{file_extension}")
+        os.rename(audiobook_path, final_path)
+        audiobook_path = final_path
+        
+        # Mark job as completed
+        job_manager.complete_job(job_id, audiobook_path)
         
         # Final yield with success notification and file path
-        yield gr.Info(f"Audiobook generated successfully in {output_format} format! You can now download it in the Download section. Click on the blue download link next to the file name.", duration=10), None
-        yield last_output, audiobook_path
+        yield gr.Info(f"✅ Job {job_id}: Audiobook generated successfully! You can download it below or from the Jobs tab.", duration=10), None, job_id
+        yield last_output, audiobook_path, job_id
         return
     except Exception as e:
         print(e)
         traceback.print_exc()
-        yield gr.Warning(f"Error generating audiobook: {str(e)}"), None
-        yield None, None
+        job_manager.fail_job(job_id, str(e))
+        yield gr.Warning(f"❌ Job {job_id}: Error generating audiobook: {str(e)}"), None, job_id
+        yield None, None, job_id
         return
-
-def update_emotion_tags_status_and_state():
-    """Update the emotion tags status display and set session state after processing"""
-    # Return both the updated status display and set session state to True
-    return gr.update(value="✅ Emotion tags processed - will be used in audiobook"), True
 
 def generate_voice_sample(tts_engine, voice_name, sample_text, reference_audio):
     """Generate a voice sample for the selected voice with custom text."""
@@ -281,9 +298,6 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     # Get voice choices once for use in all tabs
     voice_choices = get_voice_list()
     voice_descriptions = get_available_voices()
-    
-    # Session state to track if emotion tags were processed
-    emotion_tags_processed = gr.State(False)
     
     with gr.Tabs():
         # ==================== Voice Sampling Tab ====================
@@ -454,39 +468,9 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                     
                     save_btn = gr.Button("Save Edited Text", variant="primary")
 
-            # Add emotion tags step (always visible since we use Orpheus TTS)
             with gr.Row():
                 with gr.Column():
-                    gr.Markdown('<div class="step-heading">🎭 Step 3: Add Emotion Tags (Optional - Requires LLM)</div>')
-                    
-                    emotion_tags_btn = gr.Button("Add Emotion Tags", variant="primary")
-                    
-                    with gr.Accordion("What are Emotion Tags?", open=True):
-                        gr.Markdown("""
-                        **Emotion Tags enhance your audiobook by adding natural expressions:**
-
-                        * **`<laugh>`** - For laughter or when text indicates laughing
-                        * **`<chuckle>`** - For light laughter or chuckling sounds
-                        * **`<sigh>`** - For sighing or expressions of resignation/relief
-                        * **`<cough>`** - For coughing sounds or throat clearing
-                        * **`<sniffle>`** - For sniffling or nasal sounds (emotion, cold, etc.)
-                        * **`<groan>`** - For groaning sounds expressing discomfort/frustration
-                        * **`<yawn>`** - For yawning or expressions of tiredness
-                        * **`<gasp>`** - For gasping sounds of surprise/shock
-                        
-                        These tags are automatically placed based on the text context using an LLM.
-                        """)
-                        
-                    emotion_tags_output = gr.Textbox(
-                        label="Emotion Tags Processing Progress", 
-                        placeholder="Emotion tags processing progress will be shown here",
-                        interactive=False,
-                        lines=3
-                    )
-
-            with gr.Row():
-                with gr.Column():
-                    gr.Markdown('<div class="step-heading">🎧 Step 4: Generate Audiobook</div>')
+                    gr.Markdown('<div class="step-heading">🎧 Step 3: Generate Audiobook</div>')
                     
                     # TTS Engine selector for audiobook generation
                     tts_engine_audiobook = gr.Radio(
@@ -525,17 +509,27 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                             interactive=True
                         )
                     
-                    # Emotion tags status display (for Orpheus)
+                    # Emotion tags checkbox (for Orpheus only)
                     with gr.Group() as emotion_tags_group:
-                        emotion_tags_status_display = gr.Radio(
-                            choices=["✅ Emotion tags processed - will be used in audiobook", "❌ No emotion tags - standard narration will be used"],
-                            value="❌ No emotion tags - standard narration will be used",
-                            label="Emotion Tags Status",
-                            interactive=False,
-                            info="This will update automatically when you process emotion tags in Step 3"
+                        add_emotion_tags_checkbox = gr.Checkbox(
+                            label="🎭 Add Emotion Tags (Orpheus only)",
+                            value=False,
+                            info="Automatically add expressive tags like <laugh>, <sigh>, <gasp> using LLM. Adds ~5-10 min to processing."
                         )
+                        
+                        with gr.Accordion("What are Emotion Tags?", open=False):
+                            gr.Markdown("""
+                            **Emotion Tags enhance your audiobook with natural expressions:**
+
+                            * **`<laugh>`** - Laughter | **`<chuckle>`** - Light laugh
+                            * **`<sigh>`** - Sighing | **`<gasp>`** - Surprise/shock  
+                            * **`<cough>`** - Coughing | **`<groan>`** - Frustration
+                            * **`<yawn>`** - Tiredness | **`<sniffle>`** - Sniffling
+                            
+                            Tags are automatically placed based on text context using an LLM.
+                            """)
                     
-                    generate_btn = gr.Button("Generate Audiobook", variant="primary")
+                    generate_btn = gr.Button("🚀 Generate Audiobook", variant="primary", size="lg")
                     
                     audio_output = gr.Textbox(
                         label="Generation Progress", 
@@ -552,6 +546,129 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                             interactive=False,
                             type="filepath"
                         )
+                    
+                    # Hidden state for job ID
+                    current_job_id = gr.State(None)
+        
+        # ==================== Jobs Tab ====================
+        with gr.TabItem("📋 Jobs"):
+            gr.Markdown("### Audiobook Generation Jobs")
+            gr.Markdown("Track your audiobook generation jobs. Jobs are kept for **24 hours** so you can reconnect and download your audiobooks.")
+            
+            with gr.Row():
+                refresh_jobs_btn = gr.Button("🔄 Refresh Jobs", variant="secondary")
+            
+            # Jobs table
+            jobs_table = gr.Dataframe(
+                headers=["ID", "Book Title", "Engine", "Voice", "Format", "Status", "Progress", "Created", "Expires"],
+                datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                label="Your Jobs",
+                interactive=False,
+                wrap=True,
+                value=get_jobs_dataframe
+            )
+            
+            with gr.Row():
+                with gr.Column(scale=2):
+                    job_id_input = gr.Textbox(
+                        label="Job ID",
+                        placeholder="Enter a job ID to view details or download",
+                        info="Copy a job ID from the table above"
+                    )
+                
+                with gr.Column(scale=1):
+                    view_job_btn = gr.Button("🔍 View Job", variant="primary")
+                    delete_job_btn = gr.Button("🗑️ Delete Job", variant="stop")
+            
+            with gr.Group() as job_details_group:
+                gr.Markdown("### Job Details")
+                job_details_output = gr.Markdown("Select a job to view details")
+                
+                with gr.Group(visible=False) as job_download_group:
+                    job_download_file = gr.File(
+                        label="Download Audiobook",
+                        interactive=False,
+                        type="filepath"
+                    )
+            
+            # Job management functions
+            def refresh_jobs():
+                """Refresh the jobs table."""
+                return get_jobs_dataframe()
+            
+            def view_job_details(job_id):
+                """View details of a specific job."""
+                if not job_id or not job_id.strip():
+                    return "❌ Please enter a job ID", gr.update(visible=False), None
+                
+                job = job_manager.get_job(job_id.strip())
+                if not job:
+                    return f"❌ Job `{job_id}` not found or has expired", gr.update(visible=False), None
+                
+                # Format job details
+                status_emoji = {
+                    "pending": "⏳",
+                    "in_progress": "🔄",
+                    "completed": "✅",
+                    "failed": "❌"
+                }.get(job.status, "❓")
+                
+                details = f"""
+**Job ID:** `{job.job_id}`
+
+**Book Title:** {job.book_title}
+
+**TTS Engine:** {job.tts_engine} | **Voice:** {job.voice}
+
+**Output Format:** {job.output_format}
+
+**Status:** {status_emoji} {job.status.replace('_', ' ').title()}
+
+**Progress:** {job.progress}
+
+**Created:** {job.created_at}
+
+**Expires:** {job.expires_at}
+"""
+                
+                if job.error_message:
+                    details += f"\n**Error:** {job.error_message}"
+                
+                # Show download if completed
+                if job.status == "completed" and job.output_file and os.path.exists(job.output_file):
+                    return details, gr.update(visible=True), job.output_file
+                else:
+                    return details, gr.update(visible=False), None
+            
+            def delete_job_handler(job_id):
+                """Delete a job."""
+                if not job_id or not job_id.strip():
+                    return "❌ Please enter a job ID", get_jobs_dataframe()
+                
+                success = job_manager.delete_job(job_id.strip())
+                if success:
+                    return f"✅ Job `{job_id}` deleted successfully", get_jobs_dataframe()
+                else:
+                    return f"❌ Job `{job_id}` not found", get_jobs_dataframe()
+            
+            # Connect job management buttons
+            refresh_jobs_btn.click(
+                refresh_jobs,
+                inputs=[],
+                outputs=[jobs_table]
+            )
+            
+            view_job_btn.click(
+                view_job_details,
+                inputs=[job_id_input],
+                outputs=[job_details_output, job_download_group, job_download_file]
+            )
+            
+            delete_job_btn.click(
+                delete_job_handler,
+                inputs=[job_id_input],
+                outputs=[job_details_output, jobs_table]
+            )
     
     # Connections with proper handling of Gradio notifications
     
@@ -595,29 +712,23 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
         queue=True
     )
     
-    emotion_tags_btn.click(
-        add_emotion_tags_wrapper,
-        inputs=[],
-        outputs=[emotion_tags_output],
-        queue=True
-    ).then(
-        # Update emotion tags checkbox default after processing completes
-        update_emotion_tags_status_and_state,
-        inputs=[],
-        outputs=[emotion_tags_status_display, emotion_tags_processed]
-    )
-    
-    # Update the generate_audiobook_wrapper to output both progress text and file path
+    # Update the generate_audiobook_wrapper to output progress text, file path, and job ID
+    # Now includes automatic emotion tag processing if checkbox is enabled
     generate_btn.click(
         generate_audiobook_wrapper, 
-        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, emotion_tags_processed, book_title, reference_audio_audiobook], 
-        outputs=[audio_output, audiobook_file],
+        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, add_emotion_tags_checkbox, book_title, reference_audio_audiobook], 
+        outputs=[audio_output, audiobook_file, current_job_id],
         queue=True
     ).then(
         # Make the download box visible after generation completes successfully
         lambda x: gr.update(visible=True) if x is not None else gr.update(visible=False),
         inputs=[audiobook_file],
         outputs=[download_box]
+    ).then(
+        # Refresh the jobs table after generation
+        lambda: get_jobs_dataframe(),
+        inputs=[],
+        outputs=[jobs_table]
     )
     
     # Navigation button functionality for textbox scrolling

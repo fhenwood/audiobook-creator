@@ -12,6 +12,7 @@ from audiobook.utils.shell_commands import (
 )
 from audiobook.utils.text_preprocessing import preprocess_text_for_tts
 from audiobook.utils.api_health import check_if_audio_generator_api_is_up
+from audiobook.utils.job_manager import job_manager, JobStatus, Job, get_jobs_dataframe
 
 __all__ = [
     "read_json",
@@ -26,4 +27,8 @@ __all__ = [
     "validate_file_path_allowlist",
     "preprocess_text_for_tts",
     "check_if_audio_generator_api_is_up",
+    "job_manager",
+    "JobStatus",
+    "Job",
+    "get_jobs_dataframe",
 ]
