@@ -21,3 +21,39 @@ cover.jpg
 # Orpheus TTS temporary output files
 orpheus_tts/outputs/*.wav
 orpheus_tts/outputs/*.mp3
+static_files/voices/*.wav
+
+# Backup files
+*.bak
+.env.bak
+
+# User uploads
+*.epub
+*.mobi
+
+# Debug scripts
+debug_*.py
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Test artifacts
+test_*.wav
+test_*.mp3
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
+
+*.gguf
+docs/*
+*.pt
+static_files/voices/*

@@ -183,6 +183,13 @@ class VibeVoiceEngine(TTSEngine):
                     return VibeVoiceForConditionalGeneration.from_pretrained(load_path, trust_remote_code=True).to("cuda")
                 except Exception as e:
                     print(f"⚠️ FP16 load failed, trying memory efficient 4-bit fallback: {e}")
+                    
+                    # Ensure failed FP16 allocation is cleared
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                        
                     try:
                         from transformers import BitsAndBytesConfig
                         q_config = BitsAndBytesConfig(
@@ -279,7 +286,10 @@ class VibeVoiceEngine(TTSEngine):
                 
                 # Check if voice is a file path (Zero Shot)
                 import os
-                if isinstance(voice, str) and os.path.exists(voice) and os.path.isfile(voice):
+                path_exists = os.path.exists(voice)
+                is_file = os.path.isfile(voice)
+                
+                if isinstance(voice, str) and path_exists and is_file:
                     # Zero Shot Mode
                     print(f"🎤 VibeVoice: Zero-Shot Cloning from {voice}")
                     voice_samples = [voice] # Mapped to Speaker 0

@@ -18,9 +18,9 @@ def run_gradio():
 
 def run_orpheus_tts():
     """Start the Orpheus TTS API server on port 8880"""
-    # Add orpheus_tts to path
-    sys.path.insert(0, "/app/orpheus_tts")
-    os.chdir("/app/orpheus_tts")
+    # Add containers/orpheus to path
+    sys.path.insert(0, "/app/containers/orpheus")
+    os.chdir("/app/containers/orpheus")
     
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8880, access_log=True)

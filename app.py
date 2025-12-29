@@ -25,16 +25,34 @@ from openai import OpenAI
 from audiobook.core.text_extraction import process_book_and_extract_text, save_book
 from audiobook.tts.generator import process_audiobook_generation, validate_book_for_m4b_generation, sanitize_filename
 from audiobook.core.emotion_tags import process_emotion_tags
-from audiobook.core.emotion_tags import process_emotion_tags
 from audiobook.tts.voice_mapping import get_available_voices, get_voice_list
 from audiobook.tts.service import tts_service
 from audiobook.core.voice_manager import voice_manager
 from audiobook.utils.job_manager import job_manager, JobStatus, get_jobs_dataframe, auto_resume_service
 from audiobook.utils.gpu_resource_manager import gpu_manager
-from audiobook.utils.gpu_resource_manager import gpu_manager
 from audiobook.utils.background_runner import background_runner
 from audiobook.models.manager import model_manager, ModelType
 from dotenv import load_dotenv
+
+# Modular imports from app package
+from app.voice_utils import (
+    extract_title_from_filename,
+    get_vibevoice_choices,
+    get_voice_choices,
+    get_installed_tts_engines,
+    check_llm_availability,
+)
+from app.handlers import (
+    validate_book_upload,
+    text_extraction_wrapper,
+    save_book_wrapper,
+    generate_voice_sample,
+)
+from app.jobs import (
+    run_audiobook_job_background as _run_audiobook_job_background,
+    resume_job_background as _resume_job_background,
+)
+
 
 load_dotenv()
 
@@ -144,7 +162,13 @@ async def _run_audiobook_job_background(
     book_title: str,
     add_emotion_tags: bool,
     dialogue_voice: str = None,
-    reference_audio_path: str = None
+    reference_audio_path: str = None,
+    postprocess: bool = False,
+    vibevoice_voice: str = None,
+    vibevoice_temperature: float = 0.7,
+    vibevoice_top_p: float = 0.95,
+    use_vibevoice_dialogue: bool = False,
+    vibevoice_dialogue_voice: str = None
 ):
     """
     Background async function that runs the audiobook generation.
@@ -213,7 +237,13 @@ async def _run_audiobook_job_background(
                 tts_engine=tts_engine,
                 reference_audio_path=reference_audio_path,
                 job_id=job_id,
-                dialogue_voice=dialogue_voice
+                dialogue_voice=dialogue_voice,
+                use_postprocessing=postprocess,
+                vibevoice_voice=vibevoice_voice,
+                vibevoice_temperature=vibevoice_temperature,
+                vibevoice_top_p=vibevoice_top_p,
+                use_vibevoice_dialogue=use_vibevoice_dialogue,
+                vibevoice_dialogue_voice=vibevoice_dialogue_voice
             ):
                 # Update job progress with current output
                 if output:
@@ -248,7 +278,7 @@ async def _run_audiobook_job_background(
         job_manager.fail_job(job_id, str(e))
 
 
-async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, add_emotion_tags_checkbox, book_title, use_dialogue_voice_checkbox=False, dialogue_voice_selection=None, reference_audio=None, vibevoice_voice=None):
+async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, add_emotion_tags_checkbox, book_title=None, use_dialogue_voice_checkbox=False, dialogue_voice_selection=None, reference_audio=None, vibevoice_voice=None, postprocess=False, vibevoice_temperature=0.7, vibevoice_top_p=0.95, use_vibevoice_dialogue=False, vibevoice_dialogue_voice=None):
     """Wrapper for audiobook generation - starts a BACKGROUND JOB that runs independently.
     
     The job continues running even if you close the browser tab. Check the Jobs tab for progress.
@@ -272,6 +302,10 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
         yield None, None, None
         return
     
+    # If VibeVoice engine, use the VibeVoice selector value as narrator
+    if tts_engine == "VibeVoice" and vibevoice_voice:
+        narrator_voice = vibevoice_voice
+    
     # Validate Chatterbox requirements
     if tts_engine == "Chatterbox":
         if reference_audio is None or not os.path.exists(reference_audio):
@@ -291,7 +325,13 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
         book_title=book_title or "Untitled",
         tts_engine=tts_engine,
         voice=voice_display,
-        output_format=output_format
+        output_format=output_format,
+        postprocess=postprocess,
+        vibevoice_voice=vibevoice_voice,
+        vibevoice_temperature=vibevoice_temperature,
+        vibevoice_top_p=vibevoice_top_p,
+        use_vibevoice_dialogue=use_vibevoice_dialogue,
+        vibevoice_dialogue_voice=vibevoice_dialogue_voice
     )
     job_id = job.job_id
     
@@ -336,7 +376,13 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
             book_title=book_title or "Untitled",
             add_emotion_tags=add_emotion_tags,
             dialogue_voice=effective_dialogue_voice,
-            reference_audio_path=reference_audio
+            reference_audio_path=reference_audio,
+            postprocess=postprocess,
+            vibevoice_voice=vibevoice_voice,
+            vibevoice_temperature=vibevoice_temperature,
+            vibevoice_top_p=vibevoice_top_p,
+            use_vibevoice_dialogue=use_vibevoice_dialogue,
+            vibevoice_dialogue_voice=vibevoice_dialogue_voice
         )
     
     if background_runner.submit_job(job_id, create_job_coro):
@@ -444,7 +490,13 @@ async def _resume_job_background(job_id: str, job, checkpoint):
                 reference_audio_path=checkpoint.reference_audio_path if hasattr(checkpoint, 'reference_audio_path') else None,
                 job_id=job_id,
                 resume_checkpoint=checkpoint.to_dict(),
-                dialogue_voice=dialogue_voice
+                dialogue_voice=dialogue_voice,
+                use_postprocessing=job.postprocess if hasattr(job, 'postprocess') else False,
+                vibevoice_voice=job.vibevoice_voice if hasattr(job, 'vibevoice_voice') else None,
+                vibevoice_temperature=job.vibevoice_temperature if hasattr(job, 'vibevoice_temperature') else 0.7,
+                vibevoice_top_p=job.vibevoice_top_p if hasattr(job, 'vibevoice_top_p') else 0.95,
+                use_vibevoice_dialogue=job.use_vibevoice_dialogue if hasattr(job, 'use_vibevoice_dialogue') else False,
+                vibevoice_dialogue_voice=job.vibevoice_dialogue_voice if hasattr(job, 'vibevoice_dialogue_voice') else None
             ):
                 if output:
                     job_manager.update_job_progress(job_id, str(output)[:200])
@@ -525,20 +577,19 @@ async def resume_job_wrapper(job_id):
         yield None, None, job_id
         return
 
-async def generate_voice_sample(tts_engine, orpheus_voice, sample_text, reference_audio, vibevoice_voice, use_postprocessing=False):
+async def generate_voice_sample(engine_id, voice_id, sample_text, reference_audio=None, vibevoice_voice=None, use_postprocessing=False, vibevoice_temperature=0.7, vibevoice_top_p=0.95):
     """Generate a voice sample using the selected engine."""
     if not sample_text or not sample_text.strip():
         return None, "Please enter some text to generate a sample."
     
     try:
-        engine_id = tts_engine.lower()
-        voice_id = None
+        engine_id = engine_id.lower()
         
         # Determine voice ID based on engine
         if engine_id == "orpheus":
-            voice_id = orpheus_voice
             if not voice_id: return None, "Please select an Orpheus voice."
         elif engine_id == "vibevoice":
+            # Override voice_id from Orpheus selector with VibeVoice selector input
             voice_id = vibevoice_voice
             if not voice_id: return None, "Please select a VibeVoice speaker."
             
@@ -561,7 +612,9 @@ async def generate_voice_sample(tts_engine, orpheus_voice, sample_text, referenc
             engine=engine_id,
             voice=voice_id,
             reference_audio=reference_audio,
-            speed=0.9 if engine_id == "orpheus" else 1.0
+            speed=0.9 if engine_id == "orpheus" else 1.0,
+            temperature=vibevoice_temperature if engine_id == "vibevoice" else 0.7,
+            top_p=vibevoice_top_p if engine_id == "vibevoice" else 0.95
         )
         
         # Save to file - use basename if voice_id is a path
@@ -578,7 +631,7 @@ async def generate_voice_sample(tts_engine, orpheus_voice, sample_text, referenc
         with open(filepath, "wb") as f:
             f.write(result.audio_data)
             
-        status = f"✅ Generated sample with {tts_engine}"
+        status = f"✅ Generated sample with {engine_id}"
         
         # Apply Enhanced Post-processing if requested
         if use_postprocessing:
@@ -722,6 +775,24 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                             value="speaker_0",
                             info="Select one of the multi-speaker voices or a custom voice from Voice Library"
                         )
+                        
+                        with gr.Row():
+                            vibevoice_temperature_sampling = gr.Slider(
+                                label="Temperature",
+                                minimum=0.1,
+                                maximum=1.0,
+                                value=0.7,
+                                step=0.1,
+                                info="Lower = Stable, Higher = Expressive/Random"
+                            )
+                            vibevoice_top_p_sampling = gr.Slider(
+                                label="Top P",
+                                minimum=0.1,
+                                maximum=1.0,
+                                value=0.95,
+                                step=0.05,
+                                info="Lower = Focused, Higher = Diverse"
+                            )
                     
                     sample_text = gr.Textbox(
                         label="Sample Text",
@@ -805,7 +876,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
             # Generate sample button handler
             generate_sample_btn.click(
                 generate_voice_sample,
-                inputs=[tts_engine_sampling, voice_selector, sample_text, reference_audio_sampling, vibevoice_selector, sample_postprocess],
+                inputs=[tts_engine_sampling, voice_selector, sample_text, reference_audio_sampling, vibevoice_selector, sample_postprocess, vibevoice_temperature_sampling, vibevoice_top_p_sampling],
                 outputs=[audio_preview, sample_status]
             )
         
@@ -888,9 +959,50 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                     with gr.Group(visible=False) as vibevoice_audiobook_group:
                         vibevoice_audiobook_selector = gr.Dropdown(
                             choices=get_vibevoice_choices(), # Dynamic choices
-                            value="speaker_0",
+                            value=None, # Allow dynamic selection (first item usually)
                             label="VibeVoice Speaker",
                             info="Select a preset speaker or custom voice"
+                        )
+                        
+                        with gr.Row():
+                            vibevoice_temperature_audiobook = gr.Slider(
+                                label="Temperature",
+                                minimum=0.1,
+                                maximum=1.0,
+                                value=0.7,
+                                step=0.1,
+                                info="Lower = Stable, Higher = Expressive/Random"
+                            )
+                            vibevoice_top_p_audiobook = gr.Slider(
+                                label="Top P",
+                                minimum=0.1,
+                                maximum=1.0,
+                                value=0.95,
+                                step=0.05,
+                                info="Lower = Focused, Higher = Diverse"
+                            )
+
+                        use_vibevoice_dialogue = gr.Checkbox(
+                            label="🎭 Use Separate Dialogue Voice",
+                            value=False,
+                            info="Use a different voice for quoted dialogue vs narration (VibeVoice)"
+                        )
+                        
+                        vibevoice_dialogue_selector = gr.Dropdown(
+                             choices=get_vibevoice_choices(),
+                             value=None,
+                             label="Dialogue Voice (VibeVoice)",
+                             visible=False,
+                             info="Select voice for dialogue segments"
+                        )
+
+                        def toggle_vibevoice_dialogue(checked):
+                            return gr.update(visible=checked)
+                        
+                        use_vibevoice_dialogue.change(
+                            toggle_vibevoice_dialogue,
+                            inputs=[use_vibevoice_dialogue],
+                            outputs=[vibevoice_dialogue_selector]
                         )
 
                     # Dialogue voice options (Orpheus only)
@@ -1079,7 +1191,20 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
                 
                 refresh_gpu_btn.click(
                     get_gpu_status,
-                    inputs=[],
+                    inputs=[
+                    book_title, book_input, text_output, 
+                    tts_engine_audiobook, narrator_voice, 
+                    use_dialogue_voice, dialogue_voice,
+                    add_emotion_tags_checkbox,
+                    reference_audio_audiobook,
+                    vibevoice_audiobook_selector,
+                    output_format,
+                    audiobook_postprocess,
+                    vibevoice_temperature_audiobook,
+                    vibevoice_top_p_audiobook,
+                    use_vibevoice_dialogue,
+                    vibevoice_dialogue_selector
+                ],
                     outputs=[gpu_status_output]
                 )
                 
@@ -1484,7 +1609,7 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
 
             async def upload_voice_handler(name, file, preprocess, smart_select, duration):
                 if not name or not file:
-                    yield "Please provide name and file.", gr.update(value=get_voices_dataframe()), gr.update(), gr.update()
+                    yield "Please provide name and file.", gr.update(value=get_voices_dataframe()), gr.update(), gr.update(), gr.update(), gr.update()
                     return
                 
                 info = f"Processing with: {'Enhanced Preprocessing' if preprocess else ''} {'+ Smart Selection' if smart_select else ''}"
@@ -1492,7 +1617,7 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
                 
                 # Double check input
                 if not name or not file:
-                     yield "❌ Invalid input.", gr.update(value=get_voices_dataframe()), gr.update(), gr.update()
+                     yield "❌ Invalid input.", gr.update(value=get_voices_dataframe()), gr.update(), gr.update(), gr.update(), gr.update()
                      return
 
                 result = await voice_manager.add_voice(
@@ -1508,22 +1633,22 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
                     choices = get_vibevoice_choices()
                     voice_choices = get_voice_choices() 
                     # Refresh all dropdowns that depend on voices
-                    yield f"✅ Success: {status}", gr.update(value=get_voices_dataframe()), gr.update(choices=choices), gr.update(choices=voice_choices)
+                    yield f"✅ Success: {status}", gr.update(value=get_voices_dataframe()), gr.update(choices=choices), gr.update(choices=voice_choices), gr.update(choices=choices), gr.update(choices=choices)
                 else:
-                    yield "❌ Upload failed. Check logs.", gr.update(value=get_voices_dataframe()), gr.update(), gr.update()
+                    yield "❌ Upload failed. Check logs.", gr.update(value=get_voices_dataframe()), gr.update(), gr.update(), gr.update(), gr.update()
 
             add_voice_btn.click(
                 fn=upload_voice_handler,
                 inputs=[new_voice_name, new_voice_file, enable_preprocessing, enable_smart_selection, target_duration_slider],
-                outputs=[add_voice_status, voices_table, vibevoice_selector, voice_selector]
+                outputs=[add_voice_status, voices_table, vibevoice_selector, voice_selector, vibevoice_audiobook_selector, vibevoice_dialogue_selector]
             )
             
             def delete_voice_handler(filename):
                 if voice_manager.delete_voice(filename):
                     status = f"✅ Deleted {filename}"
                     choices = get_vibevoice_choices()
-                    return status, get_voices_dataframe(), gr.update(choices=choices), gr.update(choices=choices)
-                return f"❌ Failed to delete {filename}", gr.update(), gr.update(), gr.update()
+                    return status, get_voices_dataframe(), gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices)
+                return f"❌ Failed to delete {filename}", gr.update(), gr.update(), gr.update(), gr.update()
             
             # Select from table to fill delete input AND preview player
             def on_voice_select(evt: gr.SelectData, data):
@@ -1541,11 +1666,11 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
             
             def refresh_library_handler():
                 choices = get_vibevoice_choices()
-                return get_voices_dataframe(), gr.update(choices=choices), gr.update(choices=choices)
+                return get_voices_dataframe(), gr.update(choices=choices), gr.update(choices=choices), gr.update(choices=choices)
             
             refresh_voices_btn.click(
                 refresh_library_handler, 
-                outputs=[voices_table, vibevoice_selector, vibevoice_audiobook_selector]
+                outputs=[voices_table, vibevoice_selector, vibevoice_audiobook_selector, vibevoice_dialogue_selector]
             )
             
             voices_table.select(
@@ -1557,7 +1682,7 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
             delete_voice_btn.click(
                 delete_voice_handler,
                 inputs=[delete_voice_input],
-                outputs=[delete_status, voices_table, vibevoice_selector, vibevoice_audiobook_selector]
+                outputs=[delete_status, voices_table, vibevoice_selector, vibevoice_audiobook_selector, vibevoice_dialogue_selector]
             )
             
             # Update all voice dropdowns when voices change (Global Refresh)
@@ -1579,18 +1704,21 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
     def update_audiobook_tts_visibility(tts_engine):
         if tts_engine == "Orpheus":
             # Show Orpheus controls, hide others
-            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=True), gr.update(visible=True), gr.update(visible=False)
+            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=True), gr.update(visible=True), gr.update(visible=False), gr.update(), gr.update()
         elif tts_engine == "VibeVoice":
-            # Show VibeVoice controls
-            return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+            # Show VibeVoice controls AND refresh choices
+            new_choices = get_vibevoice_choices()
+            # If no choices, default might be None or first item?
+            # We keep current value if valid, but here we just refresh choices.
+            return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(choices=new_choices), gr.update(choices=new_choices)
         else:  # Chatterbox
             # Show Chatterbox controls
-            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(), gr.update()
     
     tts_engine_audiobook.change(
         update_audiobook_tts_visibility,
         inputs=[tts_engine_audiobook],
-        outputs=[narrator_voice, chatterbox_audiobook_group, emotion_tags_group, dialogue_voice_group, vibevoice_audiobook_group]
+        outputs=[narrator_voice, chatterbox_audiobook_group, emotion_tags_group, dialogue_voice_group, vibevoice_audiobook_group, vibevoice_audiobook_selector, vibevoice_dialogue_selector]
     )
     
     # Dialogue voice checkbox handler - show/hide dialogue voice dropdown
@@ -1644,7 +1772,7 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
     # Now includes automatic emotion tag processing if checkbox is enabled
     generate_btn.click(
         generate_audiobook_wrapper, 
-        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, add_emotion_tags_checkbox, book_title, use_dialogue_voice, dialogue_voice, reference_audio_audiobook, vibevoice_audiobook_selector], 
+        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, add_emotion_tags_checkbox, book_title, use_dialogue_voice, dialogue_voice, reference_audio_audiobook, vibevoice_audiobook_selector, audiobook_postprocess, vibevoice_temperature_audiobook, vibevoice_top_p_audiobook, use_vibevoice_dialogue, vibevoice_dialogue_selector], 
         outputs=[audio_output, audiobook_file, current_job_id],
         queue=True,
         api_name="generate_audiobook"

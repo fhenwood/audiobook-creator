@@ -72,6 +72,13 @@ class Job:
     checkpoint: Optional[Dict[str, Any]] = None
     last_activity: Optional[str] = None  # ISO timestamp of last activity
     retry_count: int = 0  # Number of auto-resume attempts for stalled jobs
+    # New VibeVoice / Post-processing fields
+    postprocess: bool = False
+    vibevoice_voice: Optional[str] = None
+    vibevoice_temperature: float = 0.7
+    vibevoice_top_p: float = 0.95
+    use_vibevoice_dialogue: bool = False
+    vibevoice_dialogue_voice: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -237,7 +244,13 @@ class JobManager:
         book_title: str, 
         tts_engine: str, 
         voice: str, 
-        output_format: str
+        output_format: str,
+        postprocess: bool = False,
+        vibevoice_voice: str = None,
+        vibevoice_temperature: float = 0.7,
+        vibevoice_top_p: float = 0.95,
+        use_vibevoice_dialogue: bool = False,
+        vibevoice_dialogue_voice: str = None
     ) -> Job:
         """Create a new job, its working directory, and return the job."""
         job_id = str(uuid.uuid4())[:8]  # Short UUID for easier reference
@@ -258,6 +271,12 @@ class JobManager:
             created_at=now.isoformat(),
             updated_at=now.isoformat(),
             expires_at=expires_at.isoformat(),
+            postprocess=postprocess,
+            vibevoice_voice=vibevoice_voice,
+            vibevoice_temperature=vibevoice_temperature,
+            vibevoice_top_p=vibevoice_top_p,
+            use_vibevoice_dialogue=use_vibevoice_dialogue,
+            vibevoice_dialogue_voice=vibevoice_dialogue_voice
         )
         
         self._jobs[job_id] = job

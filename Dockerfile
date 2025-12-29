@@ -10,8 +10,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH="${CUDA_HOME}/bin:${PATH}"
-ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}"
-ENV PYTHONPATH=/app:/app/orpheus_tts
+ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}:/usr/local/lib/python3.11/dist-packages/nvidia/cudnn/lib:/usr/local/lib/python3.11/dist-packages/nvidia/cublas/lib"
+ENV PYTHONPATH=/app:/app/containers/orpheus
 
 # Create working directory
 WORKDIR /app
@@ -67,7 +67,7 @@ RUN pip3 install --no-cache-dir flash-attn --no-build-isolation
 
 # Copy requirements files
 COPY requirements.txt .
-COPY orpheus_tts/requirements.txt orpheus_tts_requirements.txt
+COPY containers/orpheus/requirements.txt orpheus_tts_requirements.txt
 
 # Install other Python dependencies
 # Use --system to install into system python
@@ -86,7 +86,7 @@ RUN pip3 install --no-cache-dir git+https://github.com/vibevoice-community/VibeV
 COPY . .
 
 # Create directories
-RUN mkdir -p /app/generated_audiobooks /app/orpheus_tts/outputs
+RUN mkdir -p /app/generated_audiobooks /app/containers/orpheus/outputs
 
 # Expose ports
 EXPOSE 7860 8880

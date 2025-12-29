@@ -33,7 +33,7 @@ from audiobook.tts.audio_utils import merge_chapters_to_m4b, convert_audio_file_
 from audiobook.utils.api_health import check_if_audio_generator_api_is_up
 from audiobook.tts.voice_mapping import get_narrator_and_dialogue_voices
 from audiobook.utils.text_preprocessing import preprocess_text_for_tts
-from audiobook.utils.llm_utils import generate_audio_with_retry
+from audiobook.utils.llm_utils import generate_audio_with_engine
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -211,7 +211,7 @@ def validate_book_for_m4b_generation(book_path):
     except Exception as e:
         return False, f"Unexpected error during book validation: {str(e)}", None
 
-async def generate_audio_with_single_voice(output_format, narrator_voice, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False, job_id=None, resume_checkpoint=None, dialogue_voice=None, use_postprocessing=False):
+async def generate_audio_with_single_voice(output_format, narrator_voice, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False, job_id=None, resume_checkpoint=None, dialogue_voice=None, use_postprocessing=False, tts_engine="Orpheus", vibevoice_voice=None, vibevoice_temperature=0.7, vibevoice_top_p=0.95, use_vibevoice_dialogue=False, vibevoice_dialogue_voice=None, reference_audio_path=None):
     # Read the text from the file
     """
     Generate an audiobook using a single voice for narration and optionally a separate voice for dialogues.
@@ -314,11 +314,26 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
     lines = [line.strip() for line in lines if line.strip()]
     
     # Voice configuration
-    use_separate_dialogue = dialogue_voice is not None and dialogue_voice != narrator_voice
+    # Voice configuration
+    engine_lower = tts_engine.lower()
+    
+    # Determine effective voices based on engine
+    effective_narrator = narrator_voice
+    effective_dialogue = dialogue_voice
+    
+    if engine_lower == "vibevoice":
+        effective_narrator = vibevoice_voice if vibevoice_voice else "speaker_0"
+        if use_vibevoice_dialogue and vibevoice_dialogue_voice:
+             effective_dialogue = vibevoice_dialogue_voice
+        else:
+             effective_dialogue = None # Disable dialogue splitting if not enabled for VibeVoice
+
+    use_separate_dialogue = effective_dialogue is not None and effective_dialogue != effective_narrator
+    
     if use_separate_dialogue:
-        yield f"Using narrator voice: {narrator_voice}, dialogue voice: {dialogue_voice}"
+        yield f"Using narrator voice: {effective_narrator}, dialogue voice: {effective_dialogue} ({tts_engine})"
     else:
-        yield f"Using voice: {narrator_voice}"
+        yield f"Using voice: {effective_narrator} ({tts_engine})"
 
     # Ensure job directories exist (already created by JobManager but ensure they exist)
     os.makedirs(temp_audio_dir, exist_ok=True)
@@ -332,7 +347,13 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
         os.makedirs(temp_line_audio_dir, exist_ok=True)
     
     # Batch processing parameters
-    semaphore = asyncio.Semaphore(TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE)
+    # For VibeVoice (7B model), we limit concurrency to 1 to avoid OOM
+    if engine_lower == "vibevoice":
+        effective_batch_size = 1
+    else:
+        effective_batch_size = TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE
+        
+    semaphore = asyncio.Semaphore(effective_batch_size)
     
     # Initial setup for chapters
     chapter_index = 1
@@ -401,12 +422,15 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
         last_error = None
         for attempt in range(MAX_RETRIES_PER_LINE):
             try:
-                audio_buffer = await generate_audio_with_retry(
-                    async_openai_client, 
-                    TTS_MODEL,
-                    text_to_speak, 
-                    voice
-                )
+                async with semaphore:
+                    audio_buffer = await generate_audio_with_engine(
+                        text_to_speak, 
+                        voice,
+                        engine=engine_lower,
+                        temperature=vibevoice_temperature,
+                        top_p=vibevoice_top_p,
+                        reference_audio=reference_audio_path
+                    )
                 return audio_buffer
             except Exception as e:
                 last_error = e
@@ -458,7 +482,7 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
                         continue
                     
                     # Use dialogue voice for dialogue, narrator voice for narration
-                    voice_to_use = dialogue_voice if part["type"] == "dialogue" else narrator_voice
+                    voice_to_use = effective_dialogue if part["type"] == "dialogue" else effective_narrator
                     
                     # Remove quotes from text to speak
                     text_to_speak = text_to_speak.replace('"', '').replace('\\', '')
@@ -503,7 +527,7 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
                     return {"index": line_index, "is_chapter_heading": False, "line": line, "skipped": True}
                 
                 audio_buffer = await generate_line_audio(
-                    line_index, line, text_to_speak, narrator_voice, line_audio_path
+                    line_index, line, text_to_speak, effective_narrator, line_audio_path
                 )
                 
                 with open(line_audio_path, "wb") as wav_file:
@@ -1490,7 +1514,7 @@ async def generate_audio_with_multiple_voices(output_format, narrator_gender, ge
         yield f"Audiobook in {output_format} format created successfully"
 
 
-async def process_audiobook_generation(voice_option, narrator_voice, output_format, book_path, add_emotion_tags=False, tts_engine="Orpheus", reference_audio_path=None, job_id=None, resume_checkpoint=None, dialogue_voice=None, use_postprocessing=False):
+async def process_audiobook_generation(voice_option, narrator_voice, output_format, book_path, add_emotion_tags=False, tts_engine="Orpheus", reference_audio_path=None, job_id=None, resume_checkpoint=None, dialogue_voice=None, use_postprocessing=False, vibevoice_voice=None, vibevoice_temperature=0.7, vibevoice_top_p=0.95, use_vibevoice_dialogue=False, vibevoice_dialogue_voice=None):
     """
     Process audiobook generation with single voice narration.
     """
@@ -1517,10 +1541,11 @@ async def process_audiobook_generation(voice_option, narrator_voice, output_form
                 yield line
         else:
             # Orpheus TTS / VibeVoice
-            is_audio_generator_api_up, message = await check_if_audio_generator_api_is_up(async_openai_client)
+            if tts_engine == "Orpheus":
+                is_audio_generator_api_up, message = await check_if_audio_generator_api_is_up(async_openai_client)
 
-            if not is_audio_generator_api_up:
-                raise Exception(message)
+                if not is_audio_generator_api_up:
+                    raise Exception(message)
             
             if resume_checkpoint:
                 yield "\n🔄 Resuming audiobook generation..."
@@ -1536,7 +1561,14 @@ async def process_audiobook_generation(voice_option, narrator_voice, output_form
                 job_id=job_id,
                 resume_checkpoint=resume_checkpoint,
                 dialogue_voice=dialogue_voice,
-                use_postprocessing=use_postprocessing
+                use_postprocessing=use_postprocessing,
+                tts_engine=tts_engine,
+                vibevoice_voice=vibevoice_voice,
+                vibevoice_temperature=vibevoice_temperature,
+                vibevoice_top_p=vibevoice_top_p,
+                use_vibevoice_dialogue=use_vibevoice_dialogue,
+                vibevoice_dialogue_voice=vibevoice_dialogue_voice,
+                reference_audio_path=reference_audio_path
             ):
                 yield line
 
