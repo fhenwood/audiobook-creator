@@ -83,6 +83,42 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class BookUploadResponse(BaseModel):
+    """Response after book upload."""
+    book_id: str
+    title: str
+    chapters: List[str]
+    file_path: str
+
+
+class VoiceLibraryItem(BaseModel):
+    """Voice library entry."""
+    id: str
+    name: str
+    file_path: str
+    created_at: str
+    engine: str = "vibevoice"
+
+
+class SettingsResponse(BaseModel):
+    """Application settings."""
+    default_engine: str
+    default_voice: str
+    default_output_format: str
+    use_emotion_tags: bool
+    enable_postprocessing: bool
+
+
+class JobStreamEvent(BaseModel):
+    """WebSocket event for job streaming."""
+    event_type: str  # "progress", "log", "complete", "error"
+    job_id: str
+    progress: Optional[float] = None
+    message: Optional[str] = None
+    timestamp: str
+
+
+
 # ============================================================================
 # API Application
 # ============================================================================
@@ -333,6 +369,222 @@ async def delete_model(model_id: str):
          raise HTTPException(status_code=500, detail="Failed to delete model directory")
          
     return {"status": "deleted", "model_id": model_id}
+
+
+# ============================================================================
+# Book Upload Endpoints
+# ============================================================================
+
+@api_app.post("/books/upload", response_model=BookUploadResponse)
+async def upload_book(file: UploadFile = File(...)):
+    """
+    Upload an ebook file for audiobook generation.
+    
+    Supports: EPUB, MOBI, PDF, TXT
+    """
+    import uuid
+    import shutil
+    from datetime import datetime
+    
+    # Validate file extension
+    allowed_extensions = {'.epub', '.mobi', '.pdf', '.txt'}
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported file type. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
+    # Generate unique book ID
+    book_id = str(uuid.uuid4())[:8]
+    
+    # Save uploaded file
+    upload_dir = os.path.join("uploads", book_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, file.filename)
+    
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Extract title from filename
+    title = os.path.splitext(file.filename)[0]
+    
+    # TODO: Extract chapters using calibre
+    chapters = ["Chapter 1"]  # Placeholder
+    
+    return BookUploadResponse(
+        book_id=book_id,
+        title=title,
+        chapters=chapters,
+        file_path=file_path
+    )
+
+
+# ============================================================================
+# Voice Library Endpoints
+# ============================================================================
+
+@api_app.get("/voice-library", response_model=List[VoiceLibraryItem])
+async def list_voice_library():
+    """Get all custom voices in the voice library."""
+    from audiobook.core.voice_manager import voice_manager
+    from datetime import datetime
+    
+    voices = voice_manager.list_voices()
+    return [
+        VoiceLibraryItem(
+            id=v.name,  # Use name as ID
+            name=v.name,
+            file_path=v.path,
+            created_at=datetime.fromtimestamp(os.path.getmtime(v.path)).isoformat() if os.path.exists(v.path) else "",
+            engine="vibevoice"
+        )
+        for v in voices
+    ]
+
+
+@api_app.post("/voice-library", response_model=VoiceLibraryItem)
+async def add_voice(name: str, file: UploadFile = File(...)):
+    """Add a custom voice to the library."""
+    from audiobook.core.voice_manager import voice_manager
+    from datetime import datetime
+    
+    # Read audio data
+    audio_data = await file.read()
+    
+    # Add voice
+    voice = voice_manager.add_voice(name, audio_data)
+    
+    return VoiceLibraryItem(
+        id=voice.name,
+        name=voice.name,
+        file_path=voice.path,
+        created_at=datetime.now().isoformat(),
+        engine="vibevoice"
+    )
+
+
+@api_app.delete("/voice-library/{voice_id}")
+async def delete_voice(voice_id: str):
+    """Remove a voice from the library."""
+    from audiobook.core.voice_manager import voice_manager
+    
+    success = voice_manager.delete_voice(voice_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Voice '{voice_id}' not found")
+    
+    return {"status": "deleted", "voice_id": voice_id}
+
+
+# ============================================================================
+# Settings Endpoints
+# ============================================================================
+
+@api_app.get("/settings", response_model=SettingsResponse)
+async def get_settings():
+    """Get current application settings."""
+    return SettingsResponse(
+        default_engine=os.environ.get("DEFAULT_TTS_ENGINE", "orpheus"),
+        default_voice=os.environ.get("DEFAULT_TTS_VOICE", "zac"),
+        default_output_format=os.environ.get("DEFAULT_OUTPUT_FORMAT", "m4b"),
+        use_emotion_tags=os.environ.get("USE_EMOTION_TAGS", "true").lower() == "true",
+        enable_postprocessing=os.environ.get("ENABLE_POSTPROCESSING", "false").lower() == "true"
+    )
+
+
+@api_app.put("/settings")
+async def update_settings(settings: SettingsResponse):
+    """Update application settings."""
+    # For now, return the settings (full implementation would persist)
+    return {"status": "updated", "settings": settings.model_dump()}
+
+
+# ============================================================================
+# WebSocket Job Streaming
+# ============================================================================
+
+@api_app.websocket("/jobs/{job_id}/stream")
+async def job_stream(websocket, job_id: str):
+    """
+    WebSocket endpoint for real-time job progress updates.
+    
+    Events:
+    - progress: Job progress percentage
+    - log: Log message
+    - complete: Job finished successfully
+    - error: Job failed
+    """
+    from starlette.websockets import WebSocket
+    from datetime import datetime
+    import json
+    
+    await websocket.accept()
+    
+    try:
+        last_progress = -1
+        last_message = ""
+        
+        while True:
+            job = job_manager.get_job(job_id)
+            
+            if not job:
+                await websocket.send_json({
+                    "event_type": "error",
+                    "job_id": job_id,
+                    "message": "Job not found",
+                    "timestamp": datetime.now().isoformat()
+                })
+                break
+            
+            # Send progress update if changed
+            current_progress = job.progress
+            current_message = job.progress_message or ""
+            
+            if current_progress != last_progress or current_message != last_message:
+                await websocket.send_json({
+                    "event_type": "progress",
+                    "job_id": job_id,
+                    "progress": current_progress,
+                    "message": current_message,
+                    "timestamp": datetime.now().isoformat()
+                })
+                last_progress = current_progress
+                last_message = current_message
+            
+            # Check for completion
+            status_value = job.status.value if hasattr(job.status, 'value') else str(job.status)
+            if status_value == "completed":
+                await websocket.send_json({
+                    "event_type": "complete",
+                    "job_id": job_id,
+                    "progress": 100,
+                    "message": "Job completed successfully",
+                    "output_path": job.output_path,
+                    "timestamp": datetime.now().isoformat()
+                })
+                break
+            elif status_value == "failed":
+                await websocket.send_json({
+                    "event_type": "error",
+                    "job_id": job_id,
+                    "message": job.error or "Job failed",
+                    "timestamp": datetime.now().isoformat()
+                })
+                break
+            
+            # Wait before next poll
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        await websocket.send_json({
+            "event_type": "error",
+            "job_id": job_id,
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        })
+    finally:
+        await websocket.close()
+
 
 
 # ============================================================================
