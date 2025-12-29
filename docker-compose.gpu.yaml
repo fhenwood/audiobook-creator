@@ -17,7 +17,7 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [ gpu ]
 
   orpheus_llama:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
@@ -27,7 +27,7 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [ gpu ]
 
   llm_server:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
@@ -37,4 +37,6 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+
+              capabilities: [ gpu ]
+    restart: unless-stopped

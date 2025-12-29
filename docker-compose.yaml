@@ -11,7 +11,7 @@ services:
       - |
         set -e
         apk add --no-cache curl
-        
+
         download_model() {
           local url="$$1"
           local output="$$2"
@@ -36,7 +36,7 @@ services:
             return 1
           fi
         }
-        
+
         echo "=== Checking for Orpheus TTS model ==="
         if [ -f "/models/orpheus/${ORPHEUS_MODEL_NAME}" ]; then
           if head -c 4 "/models/orpheus/${ORPHEUS_MODEL_NAME}" | grep -q "GGUF"; then
@@ -51,7 +51,7 @@ services:
           download_model "https://huggingface.co/${ORPHEUS_HF_REPO}/resolve/main/${ORPHEUS_MODEL_NAME}" \
             "/models/orpheus/${ORPHEUS_MODEL_NAME}" "${ORPHEUS_MODEL_NAME}"
         fi
-        
+
         echo ""
         echo "=== Checking for LLM model ==="
         if [ -f "/models/llm/${LLM_MODEL_FILE}" ]; then
@@ -67,7 +67,7 @@ services:
           download_model "https://huggingface.co/${LLM_HF_REPO}/resolve/main/${LLM_MODEL_FILE}" \
             "/models/llm/${LLM_MODEL_FILE}" "${LLM_MODEL_FILE}"
         fi
-        
+
         echo ""
         echo "=== Model download check complete! ==="
     environment:
@@ -82,13 +82,10 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "7860:7860"   # Gradio Web UI
-      - "8880:8880"   # Orpheus TTS API
+      - "7860:7860" # Gradio Web UI
+      - "8880:8880" # Orpheus TTS API
     volumes:
-      - ./generated_audiobooks:/app/generated_audiobooks
-      - ./audio_samples:/app/audio_samples
-      - ./static_files:/app/static_files
-      - ./orpheus_tts/outputs:/app/orpheus_tts/outputs
+      - .:/app
       - orpheus_snac_models:/root/.cache/huggingface
       - chatterbox_models:/root/.cache/chatterbox
       # Persist temp audio files for job resume capability
@@ -110,6 +107,8 @@ services:
       # Performance tuning - parallel processing
       - TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE=${TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-8}
       - LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE=${LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-4}
+      # VibeVoice TTS settings
+      - VIBEVOICE_API_URL=http://vibevoice:8882
     depends_on:
       model_downloader:
         condition: service_completed_successfully
@@ -127,14 +126,7 @@ services:
     volumes:
       - orpheus_gguf_models:/models:ro
     command: >
-      --model /models/${ORPHEUS_MODEL_NAME}
-      --ctx-size 8192
-      --host 0.0.0.0
-      --port 5006
-      --n-gpu-layers ${GPU_LAYERS:-0}
-      --parallel ${TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-8}
-      --cont-batching
-      --flash-attn on
+      --model /models/${ORPHEUS_MODEL_NAME} --ctx-size 8192 --host 0.0.0.0 --port 5006 --n-gpu-layers ${GPU_LAYERS:-0} --parallel ${TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-8} --cont-batching --flash-attn on
     depends_on:
       model_downloader:
         condition: service_completed_successfully
@@ -148,14 +140,7 @@ services:
     volumes:
       - llm_models:/models:ro
     command: >
-      --model /models/${LLM_MODEL_FILE}
-      --ctx-size 16384
-      --host 0.0.0.0
-      --port 8000
-      --n-gpu-layers ${GPU_LAYERS:-0}
-      --parallel ${LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-4}
-      --cont-batching
-      --flash-attn on
+      --model /models/${LLM_MODEL_FILE} --ctx-size 16384 --host 0.0.0.0 --port 8000 --n-gpu-layers ${GPU_LAYERS:-0} --parallel ${LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-4} --cont-batching --flash-attn on
     depends_on:
       model_downloader:
         condition: service_completed_successfully
@@ -168,3 +153,5 @@ volumes:
   chatterbox_models:
   audiobook_output:
   audiobook_temp_audio:
+  vibevoice_models:
+  vibevoice_cache:

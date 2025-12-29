@@ -17,7 +17,7 @@ certifi==2025.11.12
 cffi==2.0.0
 chardet==3.0.4
 charset-normalizer==3.4.4
-chatterbox-tts
+
 docker==7.1.0
 click==8.3.0
 cohere==5.20.0
@@ -42,13 +42,13 @@ fastavro==1.12.1
 fastmcp==2.13.0.2
 ffmpy==1.0.0
 filelock==3.20.0
-fsspec==2025.10.0
+fsspec==2024.12.0
 genai-prices==0.0.39
 google-auth==2.43.0
 google-genai==1.50.1
 googleapis-common-protos==1.72.0
-gradio==5.49.1
-gradio-client==1.13.3
+gradio>=5.49.1
+gradio-client>=1.13.3
 griffe==1.15.0
 groovy==0.1.2
 groq==0.34.1
@@ -82,7 +82,7 @@ mdurl==0.1.2
 mistralai==1.9.11
 more-itertools==10.8.0
 nexus-rpc==1.1.0
-numpy==2.3.4
+numpy>=1.24.3,<2.0.0
 olefile==0.47
 openai==2.8.0
 openapi-pydantic==0.5.1
@@ -97,7 +97,7 @@ opentelemetry-semantic-conventions==0.59b0
 opentelemetry-util-http==0.59b0
 orjson==3.11.4
 packaging==25.0
-pandas==2.3.3
+pandas>=2.0.0
 pathable==0.4.4
 pathvalidate==3.3.1
 pdfminer-six==20191110
@@ -171,3 +171,8 @@ wrapt==1.17.3
 xlrd==1.2.0
 xlsxwriter==3.2.9
 zipp==3.23.0
+
+bitsandbytes
+accelerate
+clearvoice
+faster-whisper

@@ -211,29 +211,14 @@ def validate_book_for_m4b_generation(book_path):
     except Exception as e:
         return False, f"Unexpected error during book validation: {str(e)}", None
 
-async def generate_audio_with_single_voice(output_format, narrator_voice, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False, job_id=None, resume_checkpoint=None, dialogue_voice=None):
+async def generate_audio_with_single_voice(output_format, narrator_voice, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False, job_id=None, resume_checkpoint=None, dialogue_voice=None, use_postprocessing=False):
     # Read the text from the file
     """
     Generate an audiobook using a single voice for narration and optionally a separate voice for dialogues.
 
-    This asynchronous function reads text from a file, processes each line to determine
-    if it is narration or dialogue, and generates corresponding audio using specified
-    voices. The generated audio is organized by chapters, with options to create
-    an M4B audiobook file or a standard audio file in the specified output format.
-
     Args:
-        output_format (str): The desired output format for the final audiobook (e.g., "mp3", "wav").
-        narrator_voice (str): The voice name to use for narration (e.g., "zac", "tara").
-        generate_m4b_audiobook_file (bool, optional): Flag to determine whether to generate an M4B file. Defaults to False.
-        book_path (str, optional): The file path for the book to be used in M4B creation. Defaults to an empty string.
-        add_emotion_tags (bool, optional): Whether to use pre-applied emotion tags in the audiobook. Defaults to False.
-        job_id (str, optional): Job ID for checkpoint saving. Defaults to None.
-        resume_checkpoint (dict, optional): Checkpoint data for resuming a job. Defaults to None.
-        dialogue_voice (str, optional): Separate voice for dialogue (text in quotes). If None, narrator_voice is used for everything.
-
-    Yields:
-        str: Progress updates as the audiobook generation progresses through loading text, generating audio,
-             organizing by chapters, assembling chapters, and post-processing steps.
+        ... (existing args)
+        use_postprocessing (bool, optional): Whether to run audio enhancement on each chapter. Defaults to False.
     """
     # Import job manager for checkpoint saving and job-specific paths
     from audiobook.utils.job_manager import job_manager, JobCheckpoint
@@ -614,7 +599,9 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
         # Progress update
         completed = sum(1 for r in results_all if r is not None)
         percent = (completed / total_size) * 100
-        yield f"🎙️ Generating audiobook. Progress: {percent:.1f}% ({completed}/{total_size})"
+        progress_msg = f"🎙️ Generating audiobook. Progress: {percent:.1f}% ({completed}/{total_size})"
+        print(progress_msg)  # Also print to docker logs
+        yield progress_msg
         
         # Save checkpoint after each batch
         if job_id:
@@ -742,7 +729,31 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
     
     chapter_assembly_bar.close()
     yield "Completed assembling all chapters"
-    
+
+    # Enhanced Post-processing (Whole Book)
+    if use_postprocessing:
+        yield "✨ Starting enhanced post-processing for all chapters..."
+        from audiobook.utils.audio_enhancer import audio_pipeline
+        for idx, chapter_file in enumerate(chapter_files):
+            chapter_path = os.path.join(temp_audio_dir, chapter_file)
+            yield f"✨ Enhancing chapter {idx+1}/{len(chapter_files)}: {chapter_file}..."
+            
+            try:
+                # Process in-place (pipeline will handle temp file and overwrite)
+                # For whole book, we skip Demucs (TTS is clean) but use Enhancement and SR
+                processed_path, status_msg = audio_pipeline.process(
+                    chapter_path, 
+                    output_path=chapter_path, # Overwrite with enhanced version
+                    enable_preprocessing=True,
+                    stages=['enhancement', 'sr']
+                )
+                if processed_path:
+                    yield f"✅ Enhanced chapter {idx+1}: {status_msg}"
+            except Exception as e:
+                yield f"⚠️ Enhancement failed for {chapter_file}: {e}"
+        
+        yield "✨ Completed enhanced post-processing for all chapters"
+
     # Post-processing steps
     post_processing_bar = tqdm(total=len(chapter_files)*2, unit="task", desc="Post Processing")
     
@@ -786,7 +797,7 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
         yield f"Audiobook in {output_format} format created successfully"
 
 
-async def generate_audio_with_chatterbox(output_format, reference_audio_path, generate_m4b_audiobook_file=False, book_path=""):
+async def generate_audio_with_chatterbox(output_format, reference_audio_path, generate_m4b_audiobook_file=False, book_path="", use_postprocessing=False):
     """
     Generate an audiobook using Chatterbox TTS with zero-shot voice cloning.
 
@@ -798,6 +809,7 @@ async def generate_audio_with_chatterbox(output_format, reference_audio_path, ge
         reference_audio_path (str): Path to the reference audio file for voice cloning.
         generate_m4b_audiobook_file (bool, optional): Flag to determine whether to generate an M4B file. Defaults to False.
         book_path (str, optional): The file path for the book to be used in M4B creation. Defaults to an empty string.
+        use_postprocessing (bool, optional): Whether to run audio enhancement on each chapter. Defaults to False.
 
     Yields:
         str: Progress updates as the audiobook generation progresses.
@@ -1011,6 +1023,30 @@ async def generate_audio_with_chatterbox(output_format, reference_audio_path, ge
             chapter_files.append(f"{chapter_name}.wav")
             yield f"📚 Assembling chapters: {chapter_idx + 1}/{total_chapters} ({chapter_name})"
     
+    # Enhanced Post-processing (Whole Book)
+    if use_postprocessing:
+        yield "✨ Starting enhanced post-processing for all chapters..."
+        from audiobook.utils.audio_enhancer import audio_pipeline
+        for idx, chapter_file in enumerate(chapter_files):
+            chapter_path = os.path.join(temp_audio_dir, chapter_file)
+            yield f"✨ Enhancing chapter {idx+1}/{len(chapter_files)}: {chapter_file}..."
+            
+            try:
+                # Process in-place (pipeline will handle temp file and overwrite)
+                # For whole book, we skip Demucs (TTS is clean) but use Enhancement and SR
+                processed_path, status_msg = audio_pipeline.process(
+                    chapter_path, 
+                    output_path=chapter_path, # Overwrite with enhanced version
+                    enable_preprocessing=True,
+                    stages=['enhancement', 'sr']
+                )
+                if processed_path:
+                    yield f"✅ Enhanced chapter {idx+1}: {status_msg}"
+            except Exception as e:
+                yield f"⚠️ Enhancement failed for {chapter_file}: {e}"
+        
+        yield "✨ Completed enhanced post-processing for all chapters"
+
     # Post-processing
     yield "⏳ Post-processing chapters..."
     
@@ -1080,7 +1116,7 @@ def apply_emotion_tags_to_multi_voice_data(json_data_array):
     except Exception as e:
         return False, json_data_array, f"Error applying emotion tags: {str(e)}"
 
-async def generate_audio_with_multiple_voices(output_format, narrator_gender, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False):
+async def generate_audio_with_multiple_voices(output_format, narrator_gender, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False, use_postprocessing=False):
     # Path to the JSONL file containing speaker-attributed lines
     """
     Generate an audiobook in the specified format using multiple voices for each line
@@ -1102,6 +1138,7 @@ async def generate_audio_with_multiple_voices(output_format, narrator_gender, ge
     M4A file
     :param book_path: The path to the book file (required for generating an M4B audiobook file)
     :param add_emotion_tags: Whether to use pre-applied emotion tags in the audiobook. Defaults to False.
+    :param use_postprocessing: Whether to run audio enhancement on each chapter. Defaults to False.
     """
     
     # Early validation for M4B generation
@@ -1385,6 +1422,30 @@ async def generate_audio_with_multiple_voices(output_format, narrator_gender, ge
     chapter_assembly_bar.close()
     yield "Completed assembling all chapters"
     
+    # Enhanced Post-processing (Whole Book)
+    if use_postprocessing:
+        yield "✨ Starting enhanced post-processing for all chapters..."
+        from audiobook.utils.audio_enhancer import audio_pipeline
+        for idx, chapter_file in enumerate(chapter_files):
+            chapter_path = os.path.join(temp_audio_dir, chapter_file)
+            yield f"✨ Enhancing chapter {idx+1}/{len(chapter_files)}: {chapter_file}..."
+            
+            try:
+                # Process in-place (pipeline will handle temp file and overwrite)
+                # For whole book, we skip Demucs (TTS is clean) but use Enhancement and SR
+                processed_path, status_msg = audio_pipeline.process(
+                    chapter_path, 
+                    output_path=chapter_path, # Overwrite with enhanced version
+                    enable_preprocessing=True,
+                    stages=['enhancement', 'sr']
+                )
+                if processed_path:
+                    yield f"✅ Enhanced chapter {idx+1}: {status_msg}"
+            except Exception as e:
+                yield f"⚠️ Enhancement failed for {chapter_file}: {e}"
+        
+        yield "✨ Completed enhanced post-processing for all chapters"
+
     # Post-processing steps
     post_processing_bar = tqdm(total=len(chapter_files)*2, unit="task", desc="Post Processing")
     
@@ -1428,21 +1489,10 @@ async def generate_audio_with_multiple_voices(output_format, narrator_gender, ge
         convert_audio_file_formats("m4a", output_format, "generated_audiobooks", "audiobook")
         yield f"Audiobook in {output_format} format created successfully"
 
-async def process_audiobook_generation(voice_option, narrator_voice, output_format, book_path, add_emotion_tags=False, tts_engine="Orpheus", reference_audio_path=None, job_id=None, resume_checkpoint=None, dialogue_voice=None):
+
+async def process_audiobook_generation(voice_option, narrator_voice, output_format, book_path, add_emotion_tags=False, tts_engine="Orpheus", reference_audio_path=None, job_id=None, resume_checkpoint=None, dialogue_voice=None, use_postprocessing=False):
     """
     Process audiobook generation with single voice narration.
-    
-    Args:
-        voice_option: Ignored (single voice only)
-        narrator_voice: Voice name to use for narration (e.g., "zac", "tara") - Orpheus only
-        output_format: Output audio format
-        book_path: Path to source book for M4B metadata
-        add_emotion_tags: Whether to use pre-processed emotion tags - Orpheus only
-        tts_engine: TTS engine to use ("Orpheus" or "Chatterbox")
-        reference_audio_path: Path to reference audio for zero-shot cloning - Chatterbox only
-        job_id: Job ID for checkpoint saving and resume support
-        resume_checkpoint: Checkpoint data for resuming a stalled job
-        dialogue_voice: Optional separate voice for dialogue (text in quotes). If None, narrator_voice is used for everything.
     """
     generate_m4b_audiobook_file = False
 
@@ -1457,19 +1507,25 @@ async def process_audiobook_generation(voice_option, narrator_voice, output_form
             
             yield "\n🎧 Generating audiobook with Chatterbox TTS (Zero-Shot Voice Cloning)..."
             await asyncio.sleep(1)
-            async for line in generate_audio_with_chatterbox(output_format.lower(), reference_audio_path, generate_m4b_audiobook_file, book_path):
+            async for line in generate_audio_with_chatterbox(
+                output_format.lower(), 
+                reference_audio_path, 
+                generate_m4b_audiobook_file, 
+                book_path,
+                use_postprocessing=use_postprocessing
+            ):
                 yield line
         else:
-            # Orpheus TTS - predefined voices
+            # Orpheus TTS / VibeVoice
             is_audio_generator_api_up, message = await check_if_audio_generator_api_is_up(async_openai_client)
 
             if not is_audio_generator_api_up:
                 raise Exception(message)
             
             if resume_checkpoint:
-                yield "\n🔄 Resuming audiobook generation with Orpheus TTS..."
+                yield "\n🔄 Resuming audiobook generation..."
             else:
-                yield "\n🎧 Generating audiobook with Orpheus TTS..."
+                yield "\n🎧 Generating audiobook..."
             await asyncio.sleep(1)
             async for line in generate_audio_with_single_voice(
                 output_format.lower(), 
@@ -1479,7 +1535,8 @@ async def process_audiobook_generation(voice_option, narrator_voice, output_form
                 add_emotion_tags,
                 job_id=job_id,
                 resume_checkpoint=resume_checkpoint,
-                dialogue_voice=dialogue_voice
+                dialogue_voice=dialogue_voice,
+                use_postprocessing=use_postprocessing
             ):
                 yield line
 

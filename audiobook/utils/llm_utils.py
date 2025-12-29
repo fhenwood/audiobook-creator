@@ -149,3 +149,67 @@ async def generate_audio_with_retry(client: AsyncOpenAI, tts_model: str, text_to
     
     # If we reach here, all retry attempts failed
     raise Exception(f"Failed to generate audio after {max_retries + 1} attempts. Last error: {last_exception}")
+
+
+async def generate_audio_with_engine(
+    text: str, 
+    voice: str,
+    engine: str = "orpheus",
+    max_retries: int = MAX_RETRIES,
+    **kwargs
+) -> bytes:
+    """
+    Generate audio using the pluggable engine system with retry mechanism.
+    
+    This is the new preferred function for TTS generation that uses
+    the engine abstraction layer.
+    
+    Args:
+        text: The text to convert to speech
+        voice: The voice ID to use
+        engine: Engine name (orpheus, chatterbox, vibevoice)
+        max_retries: Maximum retry attempts
+        **kwargs: Engine-specific parameters (emotion, speed, etc.)
+        
+    Returns:
+        bytes: Audio data (WAV format)
+        
+    Raises:
+        Exception: If all retry attempts fail
+    """
+    from audiobook.tts.service import tts_service
+    
+    last_exception = None
+    
+    for attempt in range(max_retries + 1):
+        try:
+            result = await tts_service.generate(
+                text=text,
+                engine=engine,
+                voice=voice,
+                **kwargs
+            )
+            
+            if attempt > 0:
+                print(f"Successfully generated audio after {attempt} retry attempts")
+            
+            return result.audio_data
+            
+        except Exception as e:
+            last_exception = e
+            
+            if attempt < max_retries:
+                delay = min(BASE_DELAY * (2 ** attempt), MAX_DELAY)
+                jitter = random.uniform(0, 0.1) * delay
+                total_delay = delay + jitter
+                
+                print(f"TTS error on attempt {attempt + 1}/{max_retries + 1}: {e}")
+                print(f"Retrying in {total_delay:.2f} seconds...")
+                
+                await asyncio.sleep(total_delay)
+                continue
+            else:
+                print(f"Failed to generate audio after {attempt + 1} attempts: {e}")
+                break
+    
+    raise Exception(f"Failed to generate audio after {max_retries + 1} attempts. Last error: {last_exception}")

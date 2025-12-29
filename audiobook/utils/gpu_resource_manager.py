@@ -315,6 +315,37 @@ class GPUResourceManager:
             if self._orpheus_users == 0:
                 print("💤 Orpheus LLM idle timeout - stopping to free ~5GB VRAM...")
                 self._stop_container("orpheus_llama")
+
+    # =========================================================================
+    # VibeVoice Management (In-process, but needs to stop others)
+    # =========================================================================
+
+    def acquire_vibevoice(self) -> Tuple[bool, str]:
+        """
+        Acquire resources for VibeVoice (running in this process).
+        Running VibeVoice requires stopping ALL other GPU containers to free ~24GB VRAM.
+        """
+        with self._lock:
+            if not self._docker_available:
+                return True, "Docker not available, proceeding without container management"
+
+            # Force stop other services
+            print("🛑 Stopping all other GPU services to make room for VibeVoice (~24GB)...")
+            msg_success, msg_text = self.stop_llm_services()
+            if msg_success:
+                 return True, f"Environment prepared for VibeVoice: {msg_text}"
+            return False, f"Failed to stop services: {msg_text}"
+
+    def release_vibevoice(self):
+        """
+        Release VibeVoice resources.
+        Since VibeVoice runs in-process, this mainly signals we are done.
+        We can't really 'unload' it easily unless we restart the process or use del/gc,
+        which is handled by VibeVoiceEngine.shutdown().
+        """
+        # Nothing specific to do here for Docker
+        pass
+
     
     # =========================================================================
     # Combined operations (for backward compatibility and manual control)
