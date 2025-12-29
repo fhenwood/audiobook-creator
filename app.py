@@ -17,6 +17,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import gradio as gr
 import os
+import shutil
 import traceback
 import tempfile
 from fastapi import FastAPI
@@ -25,7 +26,7 @@ from audiobook.core.text_extraction import process_book_and_extract_text, save_b
 from audiobook.tts.generator import process_audiobook_generation, validate_book_for_m4b_generation, sanitize_filename
 from audiobook.core.emotion_tags import process_emotion_tags
 from audiobook.tts.voice_mapping import get_available_voices, get_voice_list
-from audiobook.utils.job_manager import job_manager, JobStatus, get_jobs_dataframe
+from audiobook.utils.job_manager import job_manager, JobStatus, get_jobs_dataframe, auto_resume_service
 from audiobook.utils.gpu_resource_manager import gpu_manager
 from dotenv import load_dotenv
 
@@ -44,6 +45,22 @@ css = """
 """
 
 app = FastAPI()
+
+# Auto-resume callback - This will be set up after the Gradio app is defined
+# For now, we just mark stalled jobs on startup and let users manually resume
+def startup_stall_check():
+    """Check for jobs that were running when the server stopped and mark them as stalled."""
+    stalled = auto_resume_service.check_startup_stalled_jobs()
+    if stalled:
+        print(f"🔄 Found {len(stalled)} job(s) that were in-progress and are now marked as stalled")
+        print(f"   Job IDs: {stalled}")
+        print(f"   These jobs can be resumed from the Jobs Dashboard")
+    
+    # Start the auto-resume monitoring service
+    auto_resume_service.start()
+
+# Run startup check
+startup_stall_check()
 
 def extract_title_from_filename(book_file):
     """Extract book title from uploaded filename without extension"""
@@ -107,7 +124,7 @@ def save_book_wrapper(text_content):
         traceback.print_exc()
         return gr.Warning(f"Error saving book: {str(e)}")
 
-async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, add_emotion_tags_checkbox, book_title, reference_audio=None):
+async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, add_emotion_tags_checkbox, book_title, use_dialogue_voice_checkbox=False, dialogue_voice_selection=None, reference_audio=None):
     """Wrapper for audiobook generation with validation, progress updates, and job tracking.
     Now includes automatic emotion tag processing if enabled.
     
@@ -115,6 +132,10 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
     - Phase 1 (Emotion Tags): Load LLM server (~12GB), process tags, then UNLOAD
     - Phase 2 (TTS): Load Orpheus LLM (~5GB), generate audio, then unload
     - This ensures we never need both models in VRAM at once!
+    
+    Args:
+        use_dialogue_voice_checkbox: If True, use separate voice for dialogue
+        dialogue_voice_selection: The voice to use for dialogue (text in quotes)
     """
     if book_file is None:
         yield gr.Warning("Please upload a book file first."), None, None
@@ -134,6 +155,8 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
         voice_display = "cloned voice"
     else:
         voice_display = narrator_voice
+        if use_dialogue_voice_checkbox and dialogue_voice_selection:
+            voice_display = f"{narrator_voice} (dialogue: {dialogue_voice_selection})"
     
     # Create job for tracking
     job = job_manager.create_job(
@@ -166,6 +189,13 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
                 
             yield gr.Info(f"✅ Job {job_id}: Book validation successful! Title: {metadata.get('Title', 'Unknown')}"), None, job_id
         
+        # Copy converted_book.txt to job directory for persistence
+        if os.path.exists("converted_book.txt"):
+            job_converted_book_path = job_manager.get_job_converted_book_path(job_id)
+            import shutil
+            shutil.copy2("converted_book.txt", job_converted_book_path)
+            yield f"📁 Job {job_id}: Book text saved to job directory", None, job_id
+        
         # =====================================================================
         # PHASE 1: Emotion Tags (if enabled) - Uses LLM server (~12GB VRAM)
         # =====================================================================
@@ -191,6 +221,12 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
                 async for progress in process_emotion_tags(False):
                     job_manager.update_job_progress(job_id, f"🎭 Emotion tags: {str(progress)[:100]}")
                     yield f"🎭 {progress}", None, job_id
+                
+                # Copy emotion tags file to job directory for persistence
+                if os.path.exists("tag_added_lines_chunks.txt"):
+                    job_emotion_tags_path = job_manager.get_job_emotion_tags_path(job_id)
+                    shutil.copy2("tag_added_lines_chunks.txt", job_emotion_tags_path)
+                    yield f"📁 Job {job_id}: Emotion tags saved to job directory", None, job_id
                 
                 yield gr.Info(f"✅ Job {job_id}: Emotion tags added successfully!"), None, job_id
             except Exception as e:
@@ -229,6 +265,11 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
             audiobook_path = None
             job_manager.update_job_progress(job_id, "Starting audiobook generation...")
             
+            # Determine dialogue voice (None means use narrator voice for everything)
+            effective_dialogue_voice = None
+            if use_dialogue_voice_checkbox and dialogue_voice_selection:
+                effective_dialogue_voice = dialogue_voice_selection
+            
             # Pass through all yield values from the original function
             async for output in process_audiobook_generation(
                 "Single Voice", 
@@ -238,7 +279,8 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
                 add_emotion_tags,
                 tts_engine=tts_engine,
                 reference_audio_path=reference_audio,
-                job_id=job_id
+                job_id=job_id,
+                dialogue_voice=effective_dialogue_voice
             ):
                 last_output = output
                 # Update job progress with current output
@@ -284,7 +326,8 @@ async def resume_job_wrapper(job_id):
     """Resume a stalled job from its checkpoint.
     
     This function retrieves the job's checkpoint data and continues
-    generation from where it left off.
+    generation from where it left off. If emotion tags were enabled
+    and the tag file doesn't exist, it will re-process them.
     """
     if not job_id:
         yield gr.Warning("Please enter a Job ID to resume"), None, job_id
@@ -314,8 +357,90 @@ async def resume_job_wrapper(job_id):
     
     # Determine what resources we need
     need_orpheus_tts = job.tts_engine == "Orpheus"
+    add_emotion_tags = checkpoint.add_emotion_tags
+    
+    # Get job-specific paths
+    job_converted_book_path = job_manager.get_job_converted_book_path(job_id)
+    job_emotion_tags_path = job_manager.get_job_emotion_tags_path(job_id)
+    
+    # Ensure job directory exists
+    job_manager.create_job_directory(job_id)
     
     try:
+        # Check if emotion tags need to be re-processed
+        # Check both job-specific path and root path
+        emotion_tags_exist = os.path.exists(job_emotion_tags_path) or os.path.exists("tag_added_lines_chunks.txt")
+        if add_emotion_tags and not emotion_tags_exist:
+            yield f"🎭 Job {job_id}: Emotion tag file not found, re-processing...", None, job_id
+            
+            # First make sure converted_book.txt exists (check job path then root)
+            converted_book_exists = os.path.exists(job_converted_book_path) or os.path.exists("converted_book.txt")
+            if not converted_book_exists:
+                # Try to extract from persistent book file
+                book_path = checkpoint.book_file_path
+                if not os.path.exists(book_path):
+                    book_filename = os.path.basename(book_path)
+                    persistent_path = os.path.join("generated_audiobooks", f"_temp_{book_filename}")
+                    if os.path.exists(persistent_path):
+                        book_path = persistent_path
+                    else:
+                        job_manager.fail_job(job_id, "Book file not found for re-extracting text")
+                        yield gr.Warning(f"❌ Job {job_id}: Book file not found"), None, job_id
+                        yield None, None, job_id
+                        return
+                
+                # Extract text from book to job directory
+                yield f"📖 Job {job_id}: Extracting text from book file...", None, job_id
+                import subprocess
+                result = subprocess.run(
+                    ["ebook-convert", book_path, job_converted_book_path],
+                    capture_output=True, text=True
+                )
+                if result.returncode != 0:
+                    job_manager.fail_job(job_id, f"Failed to extract text: {result.stderr}")
+                    yield gr.Warning(f"❌ Job {job_id}: Failed to extract text from book"), None, job_id
+                    yield None, None, job_id
+                    return
+                
+                # Also save to root for emotion processing compatibility
+                import shutil
+                shutil.copy2(job_converted_book_path, "converted_book.txt")
+            
+            # Now re-process emotion tags
+            job_manager.update_job_progress(job_id, "🚀 Starting LLM server for emotion tags...")
+            yield f"🚀 Job {job_id}: Loading LLM server for emotion tags...", None, job_id
+            
+            success, gpu_message = gpu_manager.acquire_llm()
+            if not success:
+                job_manager.fail_job(job_id, f"Failed to start LLM server: {gpu_message}")
+                yield gr.Warning(f"❌ Job {job_id}: {gpu_message}"), None, job_id
+                yield None, None, job_id
+                return
+            
+            try:
+                job_manager.update_job_progress(job_id, "🎭 Processing emotion tags...")
+                yield f"🎭 Job {job_id}: Processing emotion tags...", None, job_id
+                
+                async for progress in process_emotion_tags(False):
+                    job_manager.update_job_progress(job_id, f"🎭 Emotion tags: {str(progress)[:100]}")
+                    yield f"🎭 {progress}", None, job_id
+                
+                # Copy emotion tags to job directory
+                if os.path.exists("tag_added_lines_chunks.txt"):
+                    shutil.copy2("tag_added_lines_chunks.txt", job_emotion_tags_path)
+                    yield f"📁 Job {job_id}: Emotion tags saved to job directory", None, job_id
+                
+                yield gr.Info(f"✅ Job {job_id}: Emotion tags re-processed successfully!"), None, job_id
+            except Exception as e:
+                job_manager.fail_job(job_id, f"Emotion tags failed: {str(e)}")
+                yield gr.Warning(f"❌ Job {job_id}: Error re-processing emotion tags: {str(e)}"), None, job_id
+                yield None, None, job_id
+                return
+            finally:
+                print(f"🔄 Job {job_id}: Releasing LLM server...")
+                gpu_manager.release_llm(immediate=True)
+                yield f"🔄 Job {job_id}: LLM server stopped", None, job_id
+        
         # Acquire Orpheus LLM if needed
         if need_orpheus_tts:
             job_manager.update_job_progress(job_id, "🚀 Starting Orpheus LLM for resume...")
@@ -664,6 +789,22 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                             info="M4B supports chapters and cover art"
                         )
                     
+                    # Dialogue voice options (Orpheus only)
+                    with gr.Group() as dialogue_voice_group:
+                        use_dialogue_voice = gr.Checkbox(
+                            label="🎭 Use Separate Dialogue Voice",
+                            value=False,
+                            info="Use a different voice for quoted dialogue vs narration"
+                        )
+                        
+                        dialogue_voice = gr.Dropdown(
+                            choices=voice_choices,
+                            label="Dialogue Voice",
+                            value="dan",
+                            visible=False,
+                            info="Voice for dialogue (text in quotes)"
+                        )
+                    
                     # Chatterbox zero-shot reference audio (hidden by default)
                     with gr.Group(visible=False) as chatterbox_audiobook_group:
                         gr.Markdown("""🎤 **Zero-Shot Voice Cloning with Chatterbox**
@@ -926,6 +1067,27 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
                 api_name="get_all_jobs"
             )
             
+            # Table row click handler - populate job_id_input when clicking a row
+            def on_table_row_select(evt: gr.SelectData, table_data):
+                """Handle click on a table row to populate the job ID input."""
+                if evt is None or table_data is None:
+                    return ""
+                try:
+                    # evt.index is (row, col), we want the first column (Job ID) of the selected row
+                    row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+                    if row_idx >= 0 and row_idx < len(table_data):
+                        job_id = table_data[row_idx][0]  # First column is Job ID
+                        return job_id
+                except (IndexError, TypeError, KeyError) as e:
+                    print(f"Error getting job ID from table selection: {e}")
+                return ""
+            
+            jobs_table.select(
+                on_table_row_select,
+                inputs=[jobs_table],
+                outputs=[job_id_input]
+            )
+            
             view_job_btn.click(
                 view_job_details,
                 inputs=[job_id_input],
@@ -943,24 +1105,24 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
             def download_job_file(job_id):
                 """Download the output file for a completed job."""
                 if not job_id or not job_id.strip():
-                    return gr.Warning("Please enter a job ID"), None
+                    return gr.Warning("Please enter a job ID"), gr.update(visible=False), None
                 
                 job = job_manager.get_job(job_id.strip())
                 if not job:
-                    return gr.Warning(f"Job `{job_id}` not found or has expired"), None
+                    return gr.Warning(f"Job `{job_id}` not found or has expired"), gr.update(visible=False), None
                 
                 if job.status != "completed":
-                    return gr.Warning(f"Job `{job_id}` is not completed yet (status: {job.status})"), None
+                    return gr.Warning(f"Job `{job_id}` is not completed yet (status: {job.status})"), gr.update(visible=False), None
                 
                 if not job.output_file or not os.path.exists(job.output_file):
-                    return gr.Warning(f"Output file not found for job `{job_id}`"), None
+                    return gr.Warning(f"Output file not found for job `{job_id}`"), gr.update(visible=False), None
                 
-                return gr.Info(f"Downloading {os.path.basename(job.output_file)}..."), job.output_file
+                return f"📥 **Click the file below to download:** {os.path.basename(job.output_file)}", gr.update(visible=True), job.output_file
             
             download_job_btn.click(
                 download_job_file,
                 inputs=[job_id_input],
-                outputs=[job_details_output, job_download_file],
+                outputs=[job_details_output, job_download_group, job_download_file],
                 api_name="download_job"
             )
             
@@ -969,19 +1131,60 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
                 resume_progress_output = gr.Textbox(label="Resume Progress", lines=5, interactive=False)
                 resume_file_output = gr.File(label="Downloaded Audiobook", visible=False)
             
-            # Resume job handler wrapper
+            # Resume job handler wrapper with auto-retry logic
             async def handle_resume_job(job_id):
-                """Handle resume job button click with progress updates."""
+                """Handle resume job button click with progress updates and auto-retry on failure."""
+                MAX_RETRIES = 3
                 results = []
                 file_path = None
-                async for progress, file, _ in resume_job_wrapper(job_id):
-                    if isinstance(progress, str):
-                        results.append(progress)
-                    if file:
-                        file_path = file
+                
+                for attempt in range(MAX_RETRIES):
+                    retry_num = job_manager.increment_retry_count(job_id) if attempt > 0 else (job_manager.get_job(job_id).retry_count if job_manager.get_job(job_id) else 0)
+                    
+                    if attempt > 0:
+                        results.append(f"🔄 Retry attempt {attempt + 1}/{MAX_RETRIES} (total retries: {retry_num})...")
+                        # Reset endpoints before retry
+                        results.append("🔌 Resetting LLM endpoints...")
+                        gpu_manager.stop_llm_services()
+                        await asyncio.sleep(2)  # Brief pause to ensure clean shutdown
+                    
+                    success = False
+                    error_msg = None
+                    
+                    async for progress, file, _ in resume_job_wrapper(job_id):
+                        if isinstance(progress, str):
+                            results.append(progress)
+                        if file:
+                            file_path = file
+                            success = True
+                        # Check if this was an error message
+                        if progress and "❌" in str(progress):
+                            error_msg = str(progress)
+                    
+                    # If we got a file or job completed successfully, we're done
+                    job = job_manager.get_job(job_id)
+                    if file_path or (job and job.status == "completed"):
+                        # Reset retry count on success
+                        job_manager.reset_retry_count(job_id)
+                        break
+                    
+                    # Check if job is now marked as failed (not just stalled)
+                    if job and job.status == "failed":
+                        results.append(f"❌ Job failed permanently: {job.error_message}")
+                        break
+                    
+                    # If we can retry and haven't exceeded max retries
+                    if attempt < MAX_RETRIES - 1 and job_manager.can_auto_retry(job_id):
+                        results.append(f"⚠️ Job stalled, will retry automatically...")
+                        # Mark as stalled again for the retry
+                        job_manager.mark_job_stalled(job_id)
+                    else:
+                        if attempt == MAX_RETRIES - 1:
+                            results.append(f"❌ Max retries ({MAX_RETRIES}) reached. Job remains stalled.")
+                        break
                 
                 # Return final state
-                progress_text = "\n".join(results[-10:]) if results else "No progress"  # Last 10 lines
+                progress_text = "\n".join(results[-15:]) if results else "No progress"  # Last 15 lines
                 return progress_text, file_path, get_jobs_dataframe()
             
             resume_job_btn.click(
@@ -996,14 +1199,24 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
     # TTS engine change handler for audiobook tab - toggle visibility
     def update_audiobook_tts_visibility(tts_engine):
         if tts_engine == "Orpheus":
-            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=True)
+            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=True), gr.update(visible=True)
         else:  # Chatterbox
-            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
     
     tts_engine_audiobook.change(
         update_audiobook_tts_visibility,
         inputs=[tts_engine_audiobook],
-        outputs=[narrator_voice, chatterbox_audiobook_group, emotion_tags_group]
+        outputs=[narrator_voice, chatterbox_audiobook_group, emotion_tags_group, dialogue_voice_group]
+    )
+    
+    # Dialogue voice checkbox handler - show/hide dialogue voice dropdown
+    def update_dialogue_voice_visibility(use_dialogue):
+        return gr.update(visible=use_dialogue)
+    
+    use_dialogue_voice.change(
+        update_dialogue_voice_visibility,
+        inputs=[use_dialogue_voice],
+        outputs=[dialogue_voice]
     )
     
     # Auto-fill book title from uploaded filename
@@ -1040,7 +1253,7 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
     # Now includes automatic emotion tag processing if checkbox is enabled
     generate_btn.click(
         generate_audiobook_wrapper, 
-        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, add_emotion_tags_checkbox, book_title, reference_audio_audiobook], 
+        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, add_emotion_tags_checkbox, book_title, use_dialogue_voice, dialogue_voice, reference_audio_audiobook], 
         outputs=[audio_output, audiobook_file, current_job_id],
         queue=True,
         api_name="generate_audiobook"

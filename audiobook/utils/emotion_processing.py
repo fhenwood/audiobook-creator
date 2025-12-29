@@ -24,6 +24,7 @@ from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from audiobook.utils.llm_utils import check_if_have_to_include_no_think_token, clean_thinking_tags
 import tiktoken
+import httpx
 
 load_dotenv()
 
@@ -35,6 +36,11 @@ NO_THINK_MODE = os.environ.get("NO_THINK_MODE", "true")
 LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE = int(os.environ.get("LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE", 1))
 MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "500"))  # Max tokens per chunk for emotion processing
 EMOTION_CONTEXT_WINDOW_SIZE = int(os.environ.get("EMOTION_CONTEXT_WINDOW_SIZE", "2"))  # Number of lines before/after emotion keyword
+
+# Timeout and retry configuration for LLM calls
+LLM_REQUEST_TIMEOUT = int(os.environ.get("LLM_REQUEST_TIMEOUT", "120"))  # Timeout per request in seconds
+LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))  # Max retries per chunk
+LLM_RETRY_DELAY = float(os.environ.get("LLM_RETRY_DELAY", "2.0"))  # Base delay between retries
 
 _TOKENIZER = None
 
@@ -69,7 +75,13 @@ def count_tokens(text: str) -> int:
     except Exception:
         return 0
 
-openai_llm_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+# Create OpenAI client with timeout configuration
+openai_llm_client = AsyncOpenAI(
+    base_url=LLM_BASE_URL, 
+    api_key=LLM_API_KEY,
+    timeout=httpx.Timeout(LLM_REQUEST_TIMEOUT, connect=30.0),
+    max_retries=0  # We handle retries manually for better control
+)
 model_name = LLM_MODEL_NAME
 
 def join_lines_to_paragraphs(text):
@@ -751,42 +763,71 @@ CRITICAL - THINK LIKE A VOICE ACTOR DIRECTOR:
 
 Return *only* the modified text segment with any needed emotion tags. Do not include the delimiter lines in your response."""
 
-    async def _call_llm():
-        """Internal function to make the actual LLM call."""
+    async def _call_llm_with_retry():
+        """Internal function to make the actual LLM call with retry logic."""
         # Count tokens for monitoring
         system_tokens = count_tokens(system_prompt)
         user_tokens = count_tokens(user_prompt)
         total_input_tokens = system_tokens + user_tokens
         
-        response = await openai_llm_client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.2, # Set temperature
-        )
-        enhanced_text = response.choices[0].message.content.strip()
-        cleaned_content = clean_thinking_tags(enhanced_text)
+        last_error = None
+        for attempt in range(LLM_MAX_RETRIES):
+            try:
+                # Wrap the API call with asyncio.wait_for for additional timeout protection
+                response = await asyncio.wait_for(
+                    openai_llm_client.chat.completions.create(
+                        model=model_name,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.2,
+                    ),
+                    timeout=LLM_REQUEST_TIMEOUT
+                )
+                enhanced_text = response.choices[0].message.content.strip()
+                cleaned_content = clean_thinking_tags(enhanced_text)
+                
+                # Log token usage
+                output_tokens = count_tokens(cleaned_content)
+                total_tokens = total_input_tokens + output_tokens
+                print(f"📊 Emotion Tags - Usage: {total_input_tokens} input ({system_tokens} system + {user_tokens} user), {output_tokens} output, {total_tokens} total")
+
+                split_result = split_paragraphs_to_lines(cleaned_content, line_structure)
+
+                # Apply comprehensive postprocessing validation (using original line-by-line text)
+                validation_result = postprocess_emotion_tags(split_result, original_text_segment)
+                return validation_result
+                
+            except asyncio.TimeoutError:
+                last_error = f"Request timeout after {LLM_REQUEST_TIMEOUT}s"
+                print(f"⚠️ Emotion Tags - Attempt {attempt + 1}/{LLM_MAX_RETRIES} failed: {last_error}")
+            except Exception as e:
+                last_error = str(e)
+                print(f"⚠️ Emotion Tags - Attempt {attempt + 1}/{LLM_MAX_RETRIES} failed: {last_error}")
+            
+            # Wait before retry with exponential backoff
+            if attempt < LLM_MAX_RETRIES - 1:
+                delay = LLM_RETRY_DELAY * (2 ** attempt)
+                print(f"⏳ Retrying in {delay:.1f}s...")
+                await asyncio.sleep(delay)
         
-        # Log token usage
-        output_tokens = count_tokens(cleaned_content)
-        total_tokens = total_input_tokens + output_tokens
-        print(f"📊 Emotion Tags - Usage: {total_input_tokens} input ({system_tokens} system + {user_tokens} user), {output_tokens} output, {total_tokens} total")
-
-        split_result = split_paragraphs_to_lines(cleaned_content, line_structure)
-
-        # Apply comprehensive postprocessing validation (using original line-by-line text)
-        validation_result = postprocess_emotion_tags(split_result, original_text_segment)
-        return validation_result
+        # All retries failed
+        print(f"❌ Emotion Tags - All {LLM_MAX_RETRIES} attempts failed for segment: '{original_text_segment[:50]}...'")
+        return {
+            'text': original_text_segment,
+            'success': False,
+            'reverted': True,
+            'reason': f"All {LLM_MAX_RETRIES} attempts failed: {last_error}"
+        }
     
     try:
         # Use semaphore if provided to control concurrency
         if semaphore:
             async with semaphore:
-                return await _call_llm()
+                return await _call_llm_with_retry()
         else:
-            return await _call_llm()
+            return await _call_llm_with_retry()
     except Exception as e:
         print(f"Error querying LLM for segment: '{original_text_segment[:50]}...': {e}")
         traceback.print_exc()
@@ -1033,7 +1074,7 @@ async def add_tags_to_text_chunks(text_to_process):
             "progress": progress_counter
         }
 
-    yield f"Processing {total_chunks} chunks for emotion tags (max {LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE} concurrent)..."
+    yield f"Processing {total_chunks} chunks for emotion tags (max {LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE} concurrent, {LLM_REQUEST_TIMEOUT}s timeout per request)..."
     
     # Create tasks with chunk indices
     tasks = []
@@ -1042,18 +1083,43 @@ async def add_tags_to_text_chunks(text_to_process):
 
     # Process tasks and yield progress updates as they complete
     results = [None] * total_chunks  # Pre-allocate to maintain order
+    failed_chunks = []
     
-    for completed_task in asyncio.as_completed(tasks):
-        task_result = await completed_task
-        chunk_index = task_result["index"]
-        chunk_result = task_result["result"]
-        current_progress = task_result["progress"]
-        
-        results[chunk_index] = chunk_result
-        
-        progress_msg = f"Processed {current_progress}/{total_chunks} emotion tag chunks..."
-        print(f"📈 {progress_msg}")  # Explicit logging
-        yield progress_msg
+    # Calculate overall timeout: allow generous time but prevent infinite hangs
+    # Base time per chunk + buffer for concurrent processing
+    overall_timeout = max(600, total_chunks * LLM_REQUEST_TIMEOUT / LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE + 120)
+    start_time = asyncio.get_event_loop().time()
+    
+    try:
+        for completed_task in asyncio.as_completed(tasks, timeout=overall_timeout):
+            try:
+                task_result = await completed_task
+                chunk_index = task_result["index"]
+                chunk_result = task_result["result"]
+                current_progress = task_result["progress"]
+                
+                results[chunk_index] = chunk_result
+                
+                progress_msg = f"Processed {current_progress}/{total_chunks} emotion tag chunks..."
+                print(f"📈 {progress_msg}")  # Explicit logging
+                yield progress_msg
+            except Exception as e:
+                print(f"❌ Error processing chunk: {e}")
+                failed_chunks.append(str(e))
+                
+    except asyncio.TimeoutError:
+        elapsed = asyncio.get_event_loop().time() - start_time
+        yield f"⚠️ Overall timeout reached after {elapsed:.0f}s. Some chunks may not have been processed."
+        print(f"❌ Emotion tags overall timeout after {elapsed:.0f}s")
+    
+    # Fill in any missing results with original chunks
+    for i, result in enumerate(results):
+        if result is None:
+            print(f"⚠️ Chunk {i} was not processed, using original text")
+            results[i] = chunks[i]
+    
+    if failed_chunks:
+        yield f"⚠️ {len(failed_chunks)} chunks had errors but continued with original text"
     
     yield f"Completed processing all {total_chunks} emotion tag chunks"
 

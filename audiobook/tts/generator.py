@@ -211,10 +211,10 @@ def validate_book_for_m4b_generation(book_path):
     except Exception as e:
         return False, f"Unexpected error during book validation: {str(e)}", None
 
-async def generate_audio_with_single_voice(output_format, narrator_voice, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False, job_id=None, resume_checkpoint=None):
+async def generate_audio_with_single_voice(output_format, narrator_voice, generate_m4b_audiobook_file=False, book_path="", add_emotion_tags=False, job_id=None, resume_checkpoint=None, dialogue_voice=None):
     # Read the text from the file
     """
-    Generate an audiobook using a single voice for narration and dialogues.
+    Generate an audiobook using a single voice for narration and optionally a separate voice for dialogues.
 
     This asynchronous function reads text from a file, processes each line to determine
     if it is narration or dialogue, and generates corresponding audio using specified
@@ -229,17 +229,30 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
         add_emotion_tags (bool, optional): Whether to use pre-applied emotion tags in the audiobook. Defaults to False.
         job_id (str, optional): Job ID for checkpoint saving. Defaults to None.
         resume_checkpoint (dict, optional): Checkpoint data for resuming a job. Defaults to None.
+        dialogue_voice (str, optional): Separate voice for dialogue (text in quotes). If None, narrator_voice is used for everything.
 
     Yields:
         str: Progress updates as the audiobook generation progresses through loading text, generating audio,
              organizing by chapters, assembling chapters, and post-processing steps.
     """
-    # Import job manager for checkpoint saving (only if job_id provided)
-    if job_id:
-        from audiobook.utils.job_manager import job_manager, JobCheckpoint
+    # Import job manager for checkpoint saving and job-specific paths
+    from audiobook.utils.job_manager import job_manager, JobCheckpoint
     
     # Determine if we're resuming
     is_resuming = resume_checkpoint is not None
+    
+    # Setup job-specific directories
+    if job_id:
+        temp_audio_dir = job_manager.get_job_dir(job_id)
+        temp_line_audio_dir = job_manager.get_job_line_segments_dir(job_id)
+        converted_book_path = job_manager.get_job_converted_book_path(job_id)
+        emotion_tags_path = job_manager.get_job_emotion_tags_path(job_id)
+    else:
+        # Fallback for non-job runs (shouldn't happen in normal use)
+        temp_audio_dir = "temp_audio"
+        temp_line_audio_dir = os.path.join(temp_audio_dir, "line_segments")
+        converted_book_path = "converted_book.txt"
+        emotion_tags_path = "tag_added_lines_chunks.txt"
     
     # Early validation for M4B generation (skip if resuming - already validated)
     if generate_m4b_audiobook_file and not is_resuming:
@@ -253,7 +266,6 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
         
         # Copy book file to persistent location for resume capability
         if book_path and os.path.exists(book_path):
-            import shutil
             book_filename = os.path.basename(book_path)
             persistent_book_path = os.path.join("generated_audiobooks", f"_temp_{book_filename}")
             shutil.copy2(book_path, persistent_book_path)
@@ -272,13 +284,39 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
                 yield f"⚠️ Original book file not found - M4B will be created without cover/metadata"
 
     # Check if emotion tags should be used and if they have been pre-applied
-    if add_emotion_tags and os.path.exists("tag_added_lines_chunks.txt"):
-        with open("tag_added_lines_chunks.txt", "r", encoding='utf-8') as f:
-            text = f.read()
-        yield "Using pre-processed text with emotion tags"
-    else:
-        with open("converted_book.txt", "r", encoding='utf-8') as f:
-            text = f.read()
+    # First check job-specific path, then fallback to root path for backwards compatibility
+    if add_emotion_tags:
+        if os.path.exists(emotion_tags_path):
+            with open(emotion_tags_path, "r", encoding='utf-8') as f:
+                text = f.read()
+            yield f"Using pre-processed text with emotion tags from job directory"
+        elif os.path.exists("tag_added_lines_chunks.txt"):
+            # Backwards compatibility: copy to job directory
+            with open("tag_added_lines_chunks.txt", "r", encoding='utf-8') as f:
+                text = f.read()
+            # Save to job-specific path
+            with open(emotion_tags_path, "w", encoding='utf-8') as f:
+                f.write(text)
+            yield "Using pre-processed text with emotion tags (migrated to job directory)"
+        else:
+            # No emotion tags file exists, fall through to regular text
+            add_emotion_tags = False
+    
+    if not add_emotion_tags:
+        # Try job-specific converted book first, then root, then original
+        if os.path.exists(converted_book_path):
+            with open(converted_book_path, "r", encoding='utf-8') as f:
+                text = f.read()
+            yield f"Loaded converted book from job directory"
+        elif os.path.exists("converted_book.txt"):
+            with open("converted_book.txt", "r", encoding='utf-8') as f:
+                text = f.read()
+            # Copy to job directory for persistence
+            with open(converted_book_path, "w", encoding='utf-8') as f:
+                f.write(text)
+            yield "Loaded converted book (copied to job directory)"
+        else:
+            raise FileNotFoundError(f"No converted book file found at {converted_book_path} or converted_book.txt")
         
         # Apply text preprocessing for Orpheus TTS to prevent repetition issues
         if TTS_MODEL.lower() == "orpheus":
@@ -290,20 +328,23 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
     # Filter out empty lines
     lines = [line.strip() for line in lines if line.strip()]
     
-    # Use the provided narrator voice directly, dialogue voice same as narrator
-    dialogue_voice = narrator_voice
-    yield f"Using voice: {narrator_voice}"
+    # Voice configuration
+    use_separate_dialogue = dialogue_voice is not None and dialogue_voice != narrator_voice
+    if use_separate_dialogue:
+        yield f"Using narrator voice: {narrator_voice}, dialogue voice: {dialogue_voice}"
+    else:
+        yield f"Using voice: {narrator_voice}"
 
-    # Setup directories
-    temp_audio_dir = "temp_audio"
-    temp_line_audio_dir = os.path.join(temp_audio_dir, "line_segments")
+    # Ensure job directories exist (already created by JobManager but ensure they exist)
+    os.makedirs(temp_audio_dir, exist_ok=True)
+    os.makedirs(temp_line_audio_dir, exist_ok=True)
 
     # Only clear directories if NOT resuming
     if not resume_checkpoint:
         empty_directory(temp_audio_dir)
-
-    os.makedirs(temp_audio_dir, exist_ok=True)
-    os.makedirs(temp_line_audio_dir, exist_ok=True)
+        # Recreate after clearing
+        os.makedirs(temp_audio_dir, exist_ok=True)
+        os.makedirs(temp_line_audio_dir, exist_ok=True)
     
     # Batch processing parameters
     semaphore = asyncio.Semaphore(TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE)
@@ -312,6 +353,28 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
     chapter_index = 1
     current_chapter_audio = f"Introduction.wav"
     chapter_files = []
+    
+    # Check if M4A chapter files already exist (resume at merge step)
+    existing_m4a_files = []
+    if resume_checkpoint and os.path.exists(temp_audio_dir):
+        for f in sorted(os.listdir(temp_audio_dir)):
+            if f.endswith('.m4a'):
+                existing_m4a_files.append(f)
+    
+    if existing_m4a_files:
+        yield f"🔄 Found {len(existing_m4a_files)} existing M4A chapter files - skipping to merge step"
+        
+        # Skip directly to final merge
+        if generate_m4b_audiobook_file:
+            yield "Creating M4B audiobook file..."
+            merge_chapters_to_m4b(book_path, existing_m4a_files, temp_audio_dir)
+            yield "M4B audiobook created successfully"
+        else:
+            yield "Creating final audiobook..."
+            merge_chapters_to_standard_audio_file(existing_m4a_files, temp_audio_dir)
+            convert_audio_file_formats("m4a", output_format, "generated_audiobooks", "audiobook")
+            yield f"Audiobook in {output_format} format created successfully"
+        return
     
     # First pass: Generate audio for each line independently
     total_size = len(lines)
@@ -343,85 +406,123 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
     CHECKPOINT_INTERVAL = 50
     last_checkpoint_count = progress_counter
     
+    # Track failed lines for retry
+    failed_lines = {}  # {line_index: (line_text, error_count)}
+    MAX_RETRIES_PER_LINE = 5
+    RETRY_DELAY_BASE = 2  # seconds
+    
+    async def generate_line_audio(line_index, line, text_to_speak, voice, line_audio_path):
+        """Generate audio for a single piece of text with retry logic."""
+        last_error = None
+        for attempt in range(MAX_RETRIES_PER_LINE):
+            try:
+                audio_buffer = await generate_audio_with_retry(
+                    async_openai_client, 
+                    TTS_MODEL,
+                    text_to_speak, 
+                    voice
+                )
+                return audio_buffer
+            except Exception as e:
+                last_error = e
+                delay = RETRY_DELAY_BASE * (attempt + 1)
+                print(f"⚠️ Line {line_index} attempt {attempt + 1}/{MAX_RETRIES_PER_LINE} failed: {str(e)[:100]}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
+        
+        raise last_error if last_error else Exception("Unknown error generating audio")
+
     async def process_single_line(line_index, line):
-        async with semaphore:
-            nonlocal progress_counter, last_checkpoint_count
+        nonlocal progress_counter, last_checkpoint_count
 
-            if not line or is_only_punctuation(line):
-                progress_bar.update(1)
-                progress_counter += 1
-                return None
-            
-            # Check if this line was already generated (resume support)
-            line_audio_path = os.path.join(temp_line_audio_dir, f"line_{line_index:06d}.wav")
-            if line_index in existing_lines and os.path.exists(line_audio_path):
-                # Line already generated, skip
-                progress_bar.update(1)
-                progress_counter += 1
-                return {
-                    "index": line_index,
-                    "is_chapter_heading": check_if_chapter_heading(line),
-                    "line": line,
-                }
+        if not line or is_only_punctuation(line):
+            progress_bar.update(1)
+            progress_counter += 1
+            return {"index": line_index, "is_chapter_heading": False, "line": line, "skipped": True}
+        
+        # Check if this line was already generated (resume support)
+        line_audio_path = os.path.join(temp_line_audio_dir, f"line_{line_index:06d}.wav")
+        if line_index in existing_lines and os.path.exists(line_audio_path):
+            # Verify file is valid (not empty/corrupted)
+            try:
+                file_size = os.path.getsize(line_audio_path)
+                if file_size > 1000:  # Valid WAV should be > 1KB
+                    progress_bar.update(1)
+                    progress_counter += 1
+                    return {
+                        "index": line_index,
+                        "is_chapter_heading": check_if_chapter_heading(line),
+                        "line": line,
+                    }
+                else:
+                    # File is too small, regenerate
+                    os.remove(line_audio_path)
+                    existing_lines.discard(line_index)
+            except Exception:
+                pass
+        
+        try:
+            if use_separate_dialogue:
+                # Split line into dialogue and narration, generate separately and concatenate
+                annotated_parts = split_and_annotate_text(line)
+                combined_audio = AudioSegment.empty()
                 
-            # Split the line into annotated parts
-            annotated_parts = split_and_annotate_text(line)
-            
-            # Create combined audio using PyDub for seamless concatenation
-            combined_audio = AudioSegment.empty()
-            
-            for part in annotated_parts:
-                text_to_speak = part["text"].strip()
-
+                for part in annotated_parts:
+                    text_to_speak = part["text"].strip()
+                    
+                    if not text_to_speak or is_only_punctuation(text_to_speak):
+                        continue
+                    
+                    # Use dialogue voice for dialogue, narrator voice for narration
+                    voice_to_use = dialogue_voice if part["type"] == "dialogue" else narrator_voice
+                    
+                    # Remove quotes from text to speak
+                    text_to_speak = text_to_speak.replace('"', '').replace('\\', '')
+                    
+                    if not text_to_speak or is_only_punctuation(text_to_speak):
+                        continue
+                    
+                    # Create temporary file for this part
+                    temp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+                    temp_path = temp_file.name
+                    temp_file.close()
+                    
+                    try:
+                        audio_buffer = await generate_line_audio(
+                            line_index, line, text_to_speak, voice_to_use, temp_path
+                        )
+                        
+                        with open(temp_path, "wb") as temp_wav:
+                            temp_wav.write(audio_buffer)
+                        
+                        part_segment = AudioSegment.from_wav(temp_path)
+                        combined_audio += part_segment
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                
+                # Check if we have any audio content
+                if len(combined_audio) == 0:
+                    progress_bar.update(1)
+                    progress_counter += 1
+                    return {"index": line_index, "is_chapter_heading": False, "line": line, "skipped": True}
+                
+                # Export combined audio
+                combined_audio.export(line_audio_path, format="wav")
+            else:
+                # Single voice mode - generate entire line as one TTS call for natural prosody
+                text_to_speak = line.replace('"', '').replace('\\', '').strip()
+                
                 if not text_to_speak or is_only_punctuation(text_to_speak):
-                    continue
-
-                voice_to_speak_in = narrator_voice if part["type"] == "narration" else dialogue_voice
-
-                # strip all double quotes from the text to speak
-                text_to_speak = text_to_speak.replace('"', '').replace('\\', '')
+                    progress_bar.update(1)
+                    progress_counter += 1
+                    return {"index": line_index, "is_chapter_heading": False, "line": line, "skipped": True}
                 
-                # Create temporary file for this part
-                temp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-                temp_path = temp_file.name
-                temp_file.close()
+                audio_buffer = await generate_line_audio(
+                    line_index, line, text_to_speak, narrator_voice, line_audio_path
+                )
                 
-                try:
-                    # Generate audio for the part using retry mechanism
-                    audio_buffer = await generate_audio_with_retry(
-                        async_openai_client, 
-                        TTS_MODEL,
-                        text_to_speak, 
-                        voice_to_speak_in
-                    )
-                    
-                    # Write part audio to temp file
-                    with open(temp_path, "wb") as temp_wav:
-                        temp_wav.write(audio_buffer)
-                    
-                    # Load as AudioSegment and add to combined audio
-                    part_segment = AudioSegment.from_wav(temp_path)
-                    combined_audio += part_segment
-                    
-                except Exception as e:
-                    # Log the error for debugging
-                    print(f"Warning: Failed to generate audio for text: '{text_to_speak[:50]}...' - Error: {str(e)}")
-                    # Skip this part and continue with next part
-                    
-                finally:
-                    # Always clean up temp file
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
-            
-            # Check if we have any audio content before exporting
-            if len(combined_audio) == 0:
-                # If no audio was generated for this line, skip it entirely
-                progress_bar.update(1)
-                progress_counter += 1
-                return None
-            
-            # Write this line's audio to a temporary file
-            combined_audio.export(line_audio_path, format="wav")
+                with open(line_audio_path, "wb") as wav_file:
+                    wav_file.write(audio_buffer)
             
             # Update progress bar
             progress_bar.update(1)
@@ -444,52 +545,172 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
                 "is_chapter_heading": check_if_chapter_heading(line),
                 "line": line,
             }
+                
+        except Exception as e:
+            # Log the error and mark as failed for retry
+            error_msg = str(e)[:200]
+            print(f"❌ Line {line_index} FAILED after {MAX_RETRIES_PER_LINE} attempts: '{line[:50]}...' - Error: {error_msg}")
+            failed_lines[line_index] = (line, 1)
+            progress_bar.update(1)
+            progress_counter += 1
+            return {"index": line_index, "line": line, "failed": True, "error": error_msg}
 
-    # Create tasks and store them with their index for result collection
-    tasks = []
-    task_to_index = {}
-    for i, line in enumerate(lines):
-        task = asyncio.create_task(process_single_line(i, line))
-        tasks.append(task)
-        task_to_index[task] = i
+    # Process all lines with controlled concurrency
+    yield f"🎙️ Processing {total_size} lines with {TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE} parallel requests..."
     
-    # Initialize results_all list
+    # Process in batches to avoid overwhelming the system
+    BATCH_SIZE = TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE * 4  # Process 4x parallel limit at a time
     results_all = [None] * len(lines)
     
-    # Process tasks with progress updates
-    last_reported = -1
-    while tasks:
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for batch_start in range(0, len(lines), BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, len(lines))
+        batch_lines = [(i, lines[i]) for i in range(batch_start, batch_end)]
         
-        # Store results as tasks complete
-        for completed_task in done:
-            idx = task_to_index[completed_task]
-            results_all[idx] = completed_task.result()
+        # Create tasks for this batch
+        tasks = []
+        task_to_index = {}
         
-        tasks = list(pending)
+        for line_index, line in batch_lines:
+            # Skip if already processed successfully
+            if line_index in existing_lines:
+                line_audio_path = os.path.join(temp_line_audio_dir, f"line_{line_index:06d}.wav")
+                if os.path.exists(line_audio_path):
+                    # Validate file size - corrupted files are often very small
+                    try:
+                        file_size = os.path.getsize(line_audio_path)
+                        if file_size > 1000:  # Valid WAV should be > 1KB
+                            results_all[line_index] = {
+                                "index": line_index,
+                                "is_chapter_heading": check_if_chapter_heading(line),
+                                "line": line,
+                            }
+                            continue
+                        else:
+                            # File is too small/corrupted, regenerate
+                            print(f"⚠️ Existing file for line {line_index} is corrupted ({file_size} bytes), regenerating")
+                            os.remove(line_audio_path)
+                            existing_lines.discard(line_index)
+                    except Exception as e:
+                        print(f"⚠️ Error checking file for line {line_index}: {e}, regenerating")
+                        existing_lines.discard(line_index)
+            
+            task = asyncio.create_task(process_single_line(line_index, line))
+            tasks.append(task)
+            task_to_index[task] = line_index
         
-        # Only yield if the counter has changed
-        if progress_counter > last_reported:
-            last_reported = progress_counter
-            percent = (progress_counter / total_size) * 100
-            yield f"Generating audiobook. Progress: {percent:.1f}%"
-    
-    # All tasks have completed at this point and results_all is populated
-    results = [r for r in results_all if r is not None]  # Filter out empty lines
+        # Process batch tasks
+        if tasks:
+            done_tasks = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for task, result in zip(tasks, done_tasks):
+                idx = task_to_index[task]
+                if isinstance(result, Exception):
+                    print(f"❌ Task for line {idx} raised exception: {result}")
+                    failed_lines[idx] = (lines[idx], 1)
+                    results_all[idx] = {"index": idx, "line": lines[idx], "failed": True, "error": str(result)}
+                else:
+                    results_all[idx] = result
+        
+        # Progress update
+        completed = sum(1 for r in results_all if r is not None)
+        percent = (completed / total_size) * 100
+        yield f"🎙️ Generating audiobook. Progress: {percent:.1f}% ({completed}/{total_size})"
+        
+        # Save checkpoint after each batch
+        if job_id:
+            checkpoint = JobCheckpoint(
+                total_lines=total_size,
+                lines_completed=completed,
+                book_file_path=book_path,
+                add_emotion_tags=add_emotion_tags,
+                temp_audio_dir=temp_audio_dir
+            )
+            job_manager.update_job_checkpoint(job_id, checkpoint)
     
     progress_bar.close()
     
-    # Filter out empty lines (same as in your original code)
-    results = [r for r in results_all if r is not None]
+    # CRITICAL: Retry any failed lines
+    if failed_lines:
+        yield f"⚠️ {len(failed_lines)} lines failed. Starting retry pass..."
+        
+        retry_round = 1
+        max_retry_rounds = 3
+        
+        while failed_lines and retry_round <= max_retry_rounds:
+            yield f"🔄 Retry round {retry_round}/{max_retry_rounds} for {len(failed_lines)} failed lines..."
+            
+            # Wait before retry
+            await asyncio.sleep(5 * retry_round)
+            
+            lines_to_retry = list(failed_lines.items())
+            failed_lines.clear()
+            
+            for line_index, (line_text, error_count) in lines_to_retry:
+                try:
+                    result = await process_single_line(line_index, line_text)
+                    if result and not result.get("failed"):
+                        results_all[line_index] = result
+                        yield f"✅ Line {line_index} succeeded on retry"
+                    else:
+                        # Still failed
+                        failed_lines[line_index] = (line_text, error_count + 1)
+                except Exception as e:
+                    print(f"❌ Retry failed for line {line_index}: {e}")
+                    failed_lines[line_index] = (line_text, error_count + 1)
+            
+            retry_round += 1
+        
+        if failed_lines:
+            failed_count = len(failed_lines)
+            yield f"⚠️ WARNING: {failed_count} lines could not be generated after all retries!"
+            for line_idx, (line_text, _) in list(failed_lines.items())[:5]:
+                print(f"  - Line {line_idx}: {line_text[:80]}...")
+            
+            # Save failed lines to file for manual inspection
+            failed_lines_path = os.path.join(temp_audio_dir, "failed_lines.txt")
+            with open(failed_lines_path, "w", encoding="utf-8") as f:
+                for line_idx, (line_text, error_count) in failed_lines.items():
+                    f.write(f"Line {line_idx}: {line_text}\n")
+            yield f"📝 Failed lines saved to {failed_lines_path}"
     
-    yield "Completed generating audio for all lines"
+    # Filter results - only include successful ones with verified audio files
+    results = []
+    missing_audio_count = 0
+    for r in results_all:
+        if r is None or r.get("failed") or r.get("skipped"):
+            continue
+        
+        # CRITICAL: Verify the audio file actually exists before including in results
+        line_audio_path = os.path.join(temp_line_audio_dir, f"line_{r['index']:06d}.wav")
+        if not os.path.exists(line_audio_path):
+            print(f"⚠️ Missing audio file for line {r['index']}: {r.get('line', '')[:50]}...")
+            missing_audio_count += 1
+            continue
+            
+        # Also verify file size
+        try:
+            file_size = os.path.getsize(line_audio_path)
+            if file_size < 1000:
+                print(f"⚠️ Corrupted audio file for line {r['index']} ({file_size} bytes), excluding from assembly")
+                missing_audio_count += 1
+                continue
+        except Exception:
+            missing_audio_count += 1
+            continue
+            
+        results.append(r)
+    
+    if missing_audio_count > 0:
+        yield f"⚠️ {missing_audio_count} lines had missing or corrupted audio files"
+    
+    yield f"✅ Successfully generated audio for {len(results)}/{total_size} lines"
 
     # Second pass: Organize by chapters
     chapter_organization_bar = tqdm(total=len(results), unit="result", desc="Organizing Chapters")
     
     for result in sorted(results, key=lambda x: x["index"]):
         # Check if this is a chapter heading
-        if result["is_chapter_heading"]:
+        if result.get("is_chapter_heading"):
             chapter_index += 1
             current_chapter_audio = f"{sanitize_filename(result['line'])}.wav"
             
@@ -555,12 +776,12 @@ async def generate_audio_with_single_voice(output_format, narrator_voice, genera
     if generate_m4b_audiobook_file:
         # Merge all chapter files into a final m4b audiobook
         yield "Creating M4B audiobook file..."
-        merge_chapters_to_m4b(book_path, m4a_chapter_files)
+        merge_chapters_to_m4b(book_path, m4a_chapter_files, temp_audio_dir)
         yield "M4B audiobook created successfully"
     else:
         # Merge all chapter files into a standard M4A audiobook
         yield "Creating final audiobook..."
-        merge_chapters_to_standard_audio_file(m4a_chapter_files)
+        merge_chapters_to_standard_audio_file(m4a_chapter_files, temp_audio_dir)
         convert_audio_file_formats("m4a", output_format, "generated_audiobooks", "audiobook")
         yield f"Audiobook in {output_format} format created successfully"
 
@@ -768,7 +989,19 @@ async def generate_audio_with_chatterbox(output_format, reference_audio_path, ge
         
         for result in line_audio_results:
             if start_idx <= result["line_index"] < end_idx:
-                chapter_audio_files.append(result["audio_path"])
+                audio_path = result["audio_path"]
+                # Validate file exists and is not corrupted
+                if os.path.exists(audio_path):
+                    try:
+                        file_size = os.path.getsize(audio_path)
+                        if file_size > 1000:
+                            chapter_audio_files.append(audio_path)
+                        else:
+                            print(f"⚠️ Corrupted audio file for line {result['line_index']} ({file_size} bytes), skipping")
+                    except Exception:
+                        print(f"⚠️ Error checking audio file for line {result['line_index']}, skipping")
+                else:
+                    print(f"⚠️ Missing audio file for line {result['line_index']}, skipping")
         
         if chapter_audio_files:
             chapter_output = os.path.join(temp_audio_dir, f"{chapter_name}.wav")
@@ -802,11 +1035,11 @@ async def generate_audio_with_chatterbox(output_format, reference_audio_path, ge
 
     if generate_m4b_audiobook_file:
         yield "📀 Creating M4B audiobook file..."
-        merge_chapters_to_m4b(book_path, m4a_chapter_files)
+        merge_chapters_to_m4b(book_path, m4a_chapter_files, temp_audio_dir)
         yield "✅ M4B audiobook created successfully!"
     else:
         yield "Creating final audiobook..."
-        merge_chapters_to_standard_audio_file(m4a_chapter_files)
+        merge_chapters_to_standard_audio_file(m4a_chapter_files, temp_audio_dir)
         convert_audio_file_formats("m4a", output_format, "generated_audiobooks", "audiobook")
         yield f"Audiobook in {output_format} format created successfully"
 
@@ -1079,12 +1312,37 @@ async def generate_audio_with_multiple_voices(output_format, narrator_gender, ge
             yield f"Generating audiobook. Progress: {percent:.1f}%"
     
     # All tasks have completed at this point and results_all is populated
-    results = [r for r in results_all if r is not None]  # Filter out empty lines
-    
     progress_bar.close()
     
-    # Filter out empty lines (same as in your original code)
-    results = [r for r in results_all if r is not None]
+    # Filter results - only include successful ones with verified audio files
+    results = []
+    missing_audio_count = 0
+    for r in results_all:
+        if r is None:
+            continue
+        
+        # CRITICAL: Verify the audio file actually exists before including in results
+        line_audio_path = os.path.join(temp_line_audio_dir, f"line_{r['index']:06d}.wav")
+        if not os.path.exists(line_audio_path):
+            print(f"⚠️ Missing audio file for line {r['index']}: {r.get('line', '')[:50]}...")
+            missing_audio_count += 1
+            continue
+            
+        # Also verify file size
+        try:
+            file_size = os.path.getsize(line_audio_path)
+            if file_size < 1000:
+                print(f"⚠️ Corrupted audio file for line {r['index']} ({file_size} bytes), excluding from assembly")
+                missing_audio_count += 1
+                continue
+        except Exception:
+            missing_audio_count += 1
+            continue
+            
+        results.append(r)
+    
+    if missing_audio_count > 0:
+        yield f"⚠️ {missing_audio_count} lines had missing or corrupted audio files"
     
     yield "Completed generating audio for all lines"
     
@@ -1161,16 +1419,16 @@ async def generate_audio_with_multiple_voices(output_format, narrator_gender, ge
     if generate_m4b_audiobook_file:
         # Merge all chapter files into a final m4b audiobook
         yield "Creating M4B audiobook file..."
-        merge_chapters_to_m4b(book_path, m4a_chapter_files)
+        merge_chapters_to_m4b(book_path, m4a_chapter_files, temp_audio_dir)
         yield "M4B audiobook created successfully"
     else:
         # Merge all chapter files into a standard M4A audiobook
         yield "Creating final audiobook..."
-        merge_chapters_to_standard_audio_file(m4a_chapter_files)
+        merge_chapters_to_standard_audio_file(m4a_chapter_files, temp_audio_dir)
         convert_audio_file_formats("m4a", output_format, "generated_audiobooks", "audiobook")
         yield f"Audiobook in {output_format} format created successfully"
 
-async def process_audiobook_generation(voice_option, narrator_voice, output_format, book_path, add_emotion_tags=False, tts_engine="Orpheus", reference_audio_path=None, job_id=None, resume_checkpoint=None):
+async def process_audiobook_generation(voice_option, narrator_voice, output_format, book_path, add_emotion_tags=False, tts_engine="Orpheus", reference_audio_path=None, job_id=None, resume_checkpoint=None, dialogue_voice=None):
     """
     Process audiobook generation with single voice narration.
     
@@ -1184,6 +1442,7 @@ async def process_audiobook_generation(voice_option, narrator_voice, output_form
         reference_audio_path: Path to reference audio for zero-shot cloning - Chatterbox only
         job_id: Job ID for checkpoint saving and resume support
         resume_checkpoint: Checkpoint data for resuming a stalled job
+        dialogue_voice: Optional separate voice for dialogue (text in quotes). If None, narrator_voice is used for everything.
     """
     generate_m4b_audiobook_file = False
 
@@ -1219,7 +1478,8 @@ async def process_audiobook_generation(voice_option, narrator_voice, output_form
                 book_path, 
                 add_emotion_tags,
                 job_id=job_id,
-                resume_checkpoint=resume_checkpoint
+                resume_checkpoint=resume_checkpoint,
+                dialogue_voice=dialogue_voice
             ):
                 yield line
 

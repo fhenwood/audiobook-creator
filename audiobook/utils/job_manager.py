@@ -71,6 +71,7 @@ class Job:
     # Checkpoint support for resumable jobs
     checkpoint: Optional[Dict[str, Any]] = None
     last_activity: Optional[str] = None  # ISO timestamp of last activity
+    retry_count: int = 0  # Number of auto-resume attempts for stalled jobs
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -82,6 +83,8 @@ class Job:
             data['checkpoint'] = None
         if 'last_activity' not in data:
             data['last_activity'] = data.get('updated_at')
+        if 'retry_count' not in data:
+            data['retry_count'] = 0
         return cls(**data)
     
     def get_checkpoint(self) -> Optional[JobCheckpoint]:
@@ -101,15 +104,17 @@ class Job:
 
 class JobManager:
     """
-    Singleton job manager that persists jobs for 24 hours.
+    Singleton job manager that persists jobs for 1 week.
     Jobs are stored in a JSON file and cleaned up automatically.
+    Each job has its own working directory under temp_audio/{job_id}/
     """
     
     _instance = None
     _lock = threading.Lock()
     
     JOBS_FILE = "generated_audiobooks/jobs.json"
-    JOB_EXPIRY_HOURS = 24
+    JOB_EXPIRY_HOURS = 168  # 1 week
+    TEMP_AUDIO_BASE = "temp_audio"
     
     def __new__(cls):
         if cls._instance is None:
@@ -151,6 +156,30 @@ class JobManager:
         except Exception as e:
             print(f"Error saving jobs: {e}")
     
+    def get_job_dir(self, job_id: str) -> str:
+        """Get the working directory for a job."""
+        return os.path.join(self.TEMP_AUDIO_BASE, job_id)
+    
+    def get_job_line_segments_dir(self, job_id: str) -> str:
+        """Get the line segments directory for a job."""
+        return os.path.join(self.get_job_dir(job_id), "line_segments")
+    
+    def get_job_converted_book_path(self, job_id: str) -> str:
+        """Get the path to the converted book text file for a job."""
+        return os.path.join(self.get_job_dir(job_id), "converted_book.txt")
+    
+    def get_job_emotion_tags_path(self, job_id: str) -> str:
+        """Get the path to the emotion tags file for a job."""
+        return os.path.join(self.get_job_dir(job_id), "tag_added_lines_chunks.txt")
+    
+    def create_job_directory(self, job_id: str):
+        """Create the working directory structure for a job."""
+        job_dir = self.get_job_dir(job_id)
+        line_segments_dir = self.get_job_line_segments_dir(job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        os.makedirs(line_segments_dir, exist_ok=True)
+        return job_dir
+    
     def _cleanup_expired_jobs(self):
         """Remove jobs that have expired (older than 1 week)."""
         now = datetime.now()
@@ -173,13 +202,35 @@ class JobManager:
             print(f"Cleaned up {len(expired_jobs)} expired jobs")
     
     def _remove_job_files(self, job_id: str):
-        """Remove files associated with a job."""
+        """Remove all files associated with a job, including working directory."""
         job = self._jobs.get(job_id)
+        
+        # Remove output file (final audiobook)
         if job and job.output_file and os.path.exists(job.output_file):
             try:
                 os.remove(job.output_file)
+                print(f"Removed output file: {job.output_file}")
             except Exception as e:
                 print(f"Error removing job file {job.output_file}: {e}")
+        
+        # Remove persistent book copy
+        if job and job.checkpoint:
+            book_path = job.checkpoint.get('book_file_path', '')
+            if book_path and '_temp_' in book_path and os.path.exists(book_path):
+                try:
+                    os.remove(book_path)
+                    print(f"Removed persistent book copy: {book_path}")
+                except Exception as e:
+                    print(f"Error removing book file {book_path}: {e}")
+        
+        # Remove job working directory (temp_audio/{job_id}/)
+        job_dir = self.get_job_dir(job_id)
+        if os.path.exists(job_dir):
+            try:
+                shutil.rmtree(job_dir)
+                print(f"Removed job directory: {job_dir}")
+            except Exception as e:
+                print(f"Error removing job directory {job_dir}: {e}")
     
     def create_job(
         self, 
@@ -188,10 +239,13 @@ class JobManager:
         voice: str, 
         output_format: str
     ) -> Job:
-        """Create a new job and return its ID."""
+        """Create a new job, its working directory, and return the job."""
         job_id = str(uuid.uuid4())[:8]  # Short UUID for easier reference
         now = datetime.now()
         expires_at = now + timedelta(hours=self.JOB_EXPIRY_HOURS)
+        
+        # Create job working directory
+        self.create_job_directory(job_id)
         
         job = Job(
             job_id=job_id,
@@ -264,6 +318,40 @@ class JobManager:
                     print(f"Error checking job {job_id} for stall: {e}")
         
         return stalled_jobs
+    
+    MAX_AUTO_RETRIES = 3
+    
+    def can_auto_retry(self, job_id: str) -> bool:
+        """Check if a stalled job can be auto-retried."""
+        if job_id in self._jobs:
+            job = self._jobs[job_id]
+            return (
+                job.status == JobStatus.STALLED.value and 
+                job.checkpoint is not None and
+                job.retry_count < self.MAX_AUTO_RETRIES
+            )
+        return False
+    
+    def increment_retry_count(self, job_id: str) -> int:
+        """Increment retry count for a job and return the new count."""
+        if job_id in self._jobs:
+            self._jobs[job_id].retry_count += 1
+            self._save_jobs()
+            return self._jobs[job_id].retry_count
+        return 0
+    
+    def reset_retry_count(self, job_id: str):
+        """Reset retry count (called on successful completion)."""
+        if job_id in self._jobs:
+            self._jobs[job_id].retry_count = 0
+            self._save_jobs()
+    
+    def get_jobs_needing_auto_retry(self) -> List[str]:
+        """Get list of stalled job IDs that can be auto-retried."""
+        return [
+            job_id for job_id, job in self._jobs.items()
+            if self.can_auto_retry(job_id)
+        ]
     
     def prepare_job_for_resume(self, job_id: str) -> bool:
         """Prepare a stalled job for resumption."""
@@ -352,6 +440,155 @@ class JobManager:
 
 # Global instance
 job_manager = JobManager()
+
+
+class AutoResumeService:
+    """
+    Background service that monitors for stalled jobs and auto-resumes them.
+    This runs in a separate thread and checks periodically for jobs that need resumption.
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    # Configuration
+    CHECK_INTERVAL_SECONDS = 60  # How often to check for stalled jobs
+    STALL_TIMEOUT_SECONDS = 300  # How long without activity before a job is considered stalled
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._resume_callback = None
+        self._stop_event = threading.Event()
+    
+    def set_resume_callback(self, callback):
+        """
+        Set the callback function to resume a job.
+        The callback should accept a job_id and return True if resume was started.
+        """
+        self._resume_callback = callback
+    
+    def start(self):
+        """Start the auto-resume monitoring thread."""
+        if self._running:
+            print("⚠️ Auto-resume service already running")
+            return
+        
+        self._running = True
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True, name="auto-resume")
+        self._thread.start()
+        print(f"🔄 Auto-resume service started (checking every {self.CHECK_INTERVAL_SECONDS}s)")
+    
+    def stop(self):
+        """Stop the auto-resume monitoring thread."""
+        if not self._running:
+            return
+        
+        print("🛑 Stopping auto-resume service...")
+        self._stop_event.set()
+        self._running = False
+        
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        
+        print("✅ Auto-resume service stopped")
+    
+    def _monitor_loop(self):
+        """Main monitoring loop that runs in a background thread."""
+        print("🔍 Auto-resume monitor started")
+        
+        # Initial check on startup - detect and mark stalled jobs
+        self._check_and_mark_stalled_jobs()
+        
+        while not self._stop_event.is_set():
+            try:
+                # Wait for the check interval or until stopped
+                if self._stop_event.wait(timeout=self.CHECK_INTERVAL_SECONDS):
+                    break  # Stop event was set
+                
+                # Check for stalled jobs
+                self._check_and_mark_stalled_jobs()
+                
+                # Try to auto-resume eligible jobs
+                self._try_auto_resume()
+                
+            except Exception as e:
+                print(f"❌ Error in auto-resume monitor: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    def _check_and_mark_stalled_jobs(self):
+        """Check for jobs that have stalled and mark them."""
+        try:
+            stalled = job_manager.check_for_stalled_jobs(self.STALL_TIMEOUT_SECONDS)
+            if stalled:
+                print(f"⏸️ Marked {len(stalled)} job(s) as stalled: {stalled}")
+        except Exception as e:
+            print(f"❌ Error checking for stalled jobs: {e}")
+    
+    def _try_auto_resume(self):
+        """Try to auto-resume jobs that are eligible."""
+        if not self._resume_callback:
+            return
+        
+        try:
+            jobs_to_retry = job_manager.get_jobs_needing_auto_retry()
+            
+            for job_id in jobs_to_retry:
+                job = job_manager.get_job(job_id)
+                if not job:
+                    continue
+                
+                retry_count = job_manager.increment_retry_count(job_id)
+                print(f"🔄 Auto-resuming job {job_id} (attempt {retry_count}/{job_manager.MAX_AUTO_RETRIES})")
+                
+                try:
+                    # Call the resume callback
+                    if self._resume_callback(job_id):
+                        print(f"✅ Auto-resume started for job {job_id}")
+                    else:
+                        print(f"⚠️ Auto-resume callback returned False for job {job_id}")
+                except Exception as e:
+                    print(f"❌ Error auto-resuming job {job_id}: {e}")
+                    job_manager.fail_job(job_id, f"Auto-resume failed: {str(e)}")
+                
+                # Only try one job at a time to avoid resource conflicts
+                break
+                
+        except Exception as e:
+            print(f"❌ Error in auto-resume: {e}")
+    
+    def check_startup_stalled_jobs(self) -> List[str]:
+        """
+        Check for stalled jobs on startup and return their IDs.
+        This is called once at startup to identify jobs that stalled during the last run.
+        """
+        stalled_job_ids = []
+        
+        for job_id, job in job_manager._jobs.items():
+            # Jobs that were in-progress when the server stopped should be marked as stalled
+            if job.status == JobStatus.IN_PROGRESS.value:
+                if job_manager.mark_job_stalled(job_id):
+                    stalled_job_ids.append(job_id)
+                    print(f"⏸️ Startup: Marked job {job_id} as stalled (was in-progress)")
+        
+        return stalled_job_ids
+
+
+# Global auto-resume service instance
+auto_resume_service = AutoResumeService()
 
 
 def format_job_for_table(job: Job) -> List[Any]:

@@ -91,6 +91,8 @@ services:
       - ./orpheus_tts/outputs:/app/orpheus_tts/outputs
       - orpheus_snac_models:/root/.cache/huggingface
       - chatterbox_models:/root/.cache/chatterbox
+      # Persist temp audio files for job resume capability
+      - audiobook_temp_audio:/app/temp_audio
       # Mount docker socket for GPU resource management (start/stop LLM containers on-demand)
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -124,15 +126,15 @@ services:
       - "5006:5006"
     volumes:
       - orpheus_gguf_models:/models:ro
-    environment:
-      - LLAMA_ARG_MODEL=/models/${ORPHEUS_MODEL_NAME}
-      - LLAMA_ARG_CTX_SIZE=8192
-      - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=5006
-      - LLAMA_ARG_N_GPU_LAYERS=${GPU_LAYERS:-0}
-      # Enable parallel request processing for faster TTS generation
-      - LLAMA_ARG_PARALLEL=${TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-8}
-      - LLAMA_ARG_CONT_BATCHING=true
+    command: >
+      --model /models/${ORPHEUS_MODEL_NAME}
+      --ctx-size 8192
+      --host 0.0.0.0
+      --port 5006
+      --n-gpu-layers ${GPU_LAYERS:-0}
+      --parallel ${TTS_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-8}
+      --cont-batching
+      --flash-attn on
     depends_on:
       model_downloader:
         condition: service_completed_successfully
@@ -145,15 +147,15 @@ services:
       - "8000:8000"
     volumes:
       - llm_models:/models:ro
-    environment:
-      - LLAMA_ARG_MODEL=/models/${LLM_MODEL_FILE}
-      - LLAMA_ARG_CTX_SIZE=16384
-      - LLAMA_ARG_HOST=0.0.0.0
-      - LLAMA_ARG_PORT=8000
-      - LLAMA_ARG_N_GPU_LAYERS=${GPU_LAYERS:-0}
-      # Enable parallel request processing for faster emotion tag generation
-      - LLAMA_ARG_PARALLEL=${LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-4}
-      - LLAMA_ARG_CONT_BATCHING=true
+    command: >
+      --model /models/${LLM_MODEL_FILE}
+      --ctx-size 16384
+      --host 0.0.0.0
+      --port 8000
+      --n-gpu-layers ${GPU_LAYERS:-0}
+      --parallel ${LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE:-4}
+      --cont-batching
+      --flash-attn on
     depends_on:
       model_downloader:
         condition: service_completed_successfully
@@ -165,3 +167,4 @@ volumes:
   llm_models:
   chatterbox_models:
   audiobook_output:
+  audiobook_temp_audio:

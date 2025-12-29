@@ -162,7 +162,7 @@ def get_audio_duration_using_raw_ffmpeg(file_path):
         traceback.print_exc()
         return None
 
-def generate_chapters_file(chapter_files, output_file="chapters.txt"):
+def generate_chapters_file(chapter_files, output_file="chapters.txt", temp_audio_dir="temp_audio"):
     """
     Generates a chapter metadata file for FFmpeg.
 
@@ -171,12 +171,13 @@ def generate_chapters_file(chapter_files, output_file="chapters.txt"):
     Args:
         chapter_files (list): A list of the paths to the individual chapter audio files.
         output_file (str): The path to the output chapter metadata file. Defaults to "chapters.txt".
+        temp_audio_dir (str): The directory where temp audio files are stored.
     """
     start_time = 0
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(";FFMETADATA1\n")
         for chapter in chapter_files:
-            duration = get_audio_duration_using_ffprobe(os.path.join("temp_audio", chapter))
+            duration = get_audio_duration_using_ffprobe(os.path.join(temp_audio_dir, chapter))
             end_time = start_time + duration
             
             # Write the chapter metadata to the file
@@ -497,7 +498,7 @@ def convert_audio_file_formats(input_format, output_format, folder_path, file_na
         elif output_format == "pcm":
             create_pcm_file_from_m4a_file(input_path, output_path)
     
-def merge_chapters_to_m4b(book_path, chapter_files):
+def merge_chapters_to_m4b(book_path, chapter_files, temp_audio_dir="temp_audio"):
     """
     Uses ffmpeg to merge all chapter files into an M4B audiobook.
 
@@ -506,6 +507,7 @@ def merge_chapters_to_m4b(book_path, chapter_files):
     Args:
         book_path (str): The path to the book file.
         chapter_files (list): A list of the paths to the individual chapter audio files.
+        temp_audio_dir (str): The directory where temp audio files are stored.
     """
     # Validate inputs
     if not validate_file_path(book_path):
@@ -516,7 +518,7 @@ def merge_chapters_to_m4b(book_path, chapter_files):
     with open(file_list_path, "w", encoding='utf-8') as f:
         for chapter in chapter_files:
             # Validate each chapter file path
-            chapter_path = os.path.join('temp_audio', chapter)
+            chapter_path = os.path.join(temp_audio_dir, chapter)
             if not validate_file_path(chapter_path):
                 raise ValueError(f"Invalid chapter file: {chapter}")
             f.write(f"file '{chapter_path}'\n")
@@ -530,7 +532,7 @@ def merge_chapters_to_m4b(book_path, chapter_files):
     comments = escape_metadata(metadata.get("Comments", ""))
     
     # Generate chapter metadata
-    generate_chapters_file(chapter_files, "chapters.txt")
+    generate_chapters_file(chapter_files, "chapters.txt", temp_audio_dir)
 
     output_m4b = "generated_audiobooks/audiobook.m4b"
     cover_image = "cover.jpg"
@@ -653,7 +655,7 @@ def add_silence_to_audio_file_by_reencoding_using_ffmpeg(temp_dir, input_file_na
     except OSError as e:
         raise RuntimeError(f"Failed to rename file: {e}")
 
-def merge_chapters_to_standard_audio_file(chapter_files):
+def merge_chapters_to_standard_audio_file(chapter_files, temp_audio_dir="temp_audio"):
     """
     Uses ffmpeg to merge all chapter files into a standard M4A audio file).
 
@@ -661,13 +663,14 @@ def merge_chapters_to_standard_audio_file(chapter_files):
 
     Args:
         chapter_files (list): A list of the paths to the individual chapter audio files.
+        temp_audio_dir (str): The directory where temp audio files are stored.
     """
     file_list_path = "chapter_list.txt"
     
     # Write the list of chapter files to a text file (ffmpeg input)
     with open(file_list_path, "w", encoding='utf-8') as f:
         for chapter in chapter_files:
-            chapter_path = os.path.join('temp_audio', chapter)
+            chapter_path = os.path.join(temp_audio_dir, chapter)
             # Validate each chapter file
             if not validate_file_path(chapter_path):
                 raise ValueError(f"Invalid chapter file: {chapter}")
@@ -720,11 +723,29 @@ def assemble_chapter_with_ffmpeg(chapter_file, line_indices, temp_line_audio_dir
     
     try:
         with open(file_list_path, "w", encoding='utf-8') as f:
+            files_written = 0
             for line_index in sorted(line_indices):
                 line_path = os.path.join(temp_line_audio_dir, f"line_{line_index:06d}.wav")
+                
+                # CRITICAL: Verify file exists and is valid before adding to concat list
+                if not os.path.exists(line_path):
+                    print(f"⚠️ Missing audio file for line {line_index}, skipping from chapter assembly")
+                    continue
+                    
+                # Check file size - a valid WAV file should be at least 1KB
+                file_size = os.path.getsize(line_path)
+                if file_size < 1000:
+                    print(f"⚠️ Audio file for line {line_index} is too small ({file_size} bytes), likely corrupted - skipping")
+                    continue
+                
                 # Use absolute path to avoid issues with FFmpeg concat
                 abs_line_path = os.path.abspath(line_path)
                 f.write(f"file '{abs_line_path}'\n")
+                files_written += 1
+            
+            if files_written == 0:
+                print(f"⚠️ No valid audio files found for chapter, skipping chapter creation")
+                return
         
         # Create the full chapter file path
         chapter_path = os.path.join(temp_audio_dir, chapter_file)
@@ -767,9 +788,30 @@ def concatenate_audio_files_with_ffmpeg(audio_files: list, output_path: str):
     import tempfile
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
         file_list_path = f.name
+        files_written = 0
         for audio_file in audio_files:
+            # Validate file exists and is not corrupted
+            if not os.path.exists(audio_file):
+                print(f"⚠️ Missing audio file: {audio_file}, skipping")
+                continue
+            try:
+                file_size = os.path.getsize(audio_file)
+                if file_size < 1000:
+                    print(f"⚠️ Audio file too small ({file_size} bytes): {audio_file}, skipping")
+                    continue
+            except Exception:
+                print(f"⚠️ Error checking file: {audio_file}, skipping")
+                continue
+                
             abs_path = os.path.abspath(audio_file)
             f.write(f"file '{abs_path}'\n")
+            files_written += 1
+    
+    if files_written == 0:
+        print(f"⚠️ No valid audio files to concatenate, skipping")
+        if os.path.exists(file_list_path):
+            os.unlink(file_list_path)
+        return
     
     try:
         # Use FFmpeg to concatenate the audio files

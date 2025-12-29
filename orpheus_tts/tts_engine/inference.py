@@ -89,9 +89,9 @@ except (ValueError, TypeError):
     MAX_TOKENS = 8192
 
 try:
-    TEMPERATURE = float(os.environ.get("ORPHEUS_TEMPERATURE", "0.6"))
+    TEMPERATURE = float(os.environ.get("ORPHEUS_TEMPERATURE", "0.4"))  # Lower temperature for more consistent voice
 except (ValueError, TypeError):
-    TEMPERATURE = 0.6
+    TEMPERATURE = 0.4
 
 try:
     TOP_P = float(os.environ.get("ORPHEUS_TOP_P", "0.9"))
