@@ -47,6 +47,23 @@ Tests the application's UI via browser automation:
 | `TestJobsTab` | Jobs tab accessible, table exists, refresh works |
 | `TestVoiceLibraryUI` | Voice Library tab accessible |
 
+### `e2e_architecture_test.py` - Architecture Tests
+
+Tests the new MacWhisper-style API and refactored modules:
+
+| Test Class | What It Tests |
+|------------|---------------|
+| `TestAPIHealth` | `/api/health`, `/api/engines` |
+| `TestVoiceLibraryAPI` | `/api/voice-library` CRUD |
+| `TestSettingsAPI` | `/api/settings` GET/PUT |
+| `TestJobsAPI` | `/api/jobs` listing |
+| `TestModelsAPI` | `/api/models` listing |
+| `TestVoicesAPI` | `/api/engines/{engine}/voices` |
+| `TestAppModules` | `app.voice_utils`, `app.handlers`, `app.jobs` imports |
+| `TestGeneratorPackage` | `audiobook.tts.generator.utils` imports |
+| `TestOrpheusEngine` | `OrpheusEngine` class and voices |
+
+
 ## Configuration
 
 ### Environment Variables
