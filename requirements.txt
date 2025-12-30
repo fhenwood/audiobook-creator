@@ -75,6 +75,7 @@ keyring==25.6.0
 logfire==4.14.2
 logfire-api==4.14.2
 lxml==6.0.2
+llama-cpp-python>=0.2.0  # Orpheus in-process inference
 markdown-it-py==4.0.0
 markupsafe==3.0.3
 mcp==1.21.1
