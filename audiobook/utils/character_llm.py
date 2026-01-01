@@ -30,19 +30,19 @@ from pydantic_ai.exceptions import ModelHTTPError
 from audiobook.utils.llm_utils import check_if_have_to_include_no_think_token
 from audiobook.utils.file_utils import write_jsons_to_jsonl_file, empty_file, write_json_to_file
 import tiktoken
-from dotenv import load_dotenv
 
-load_dotenv()
 
-MAX_CONTEXT_WINDOW = int(os.environ.get("MAX_CONTEXT_WINDOW", "10240"))  # Total API context window
-MAX_BATCH_TOKENS = int(os.environ.get("MAX_BATCH_TOKENS", "2000"))  # Tokens per batch (before overhead)
-MAX_CONTEXT_TOKENS_PER_DIRECTION = int(os.environ.get("MAX_CONTEXT_TOKENS_PER_DIRECTION", "1000"))  # Tokens per direction
+from audiobook.config import settings
+
+MAX_CONTEXT_WINDOW = settings.max_context_window
+MAX_BATCH_TOKENS = settings.max_batch_tokens
+MAX_CONTEXT_TOKENS_PER_DIRECTION = settings.max_context_tokens_per_direction
 MAX_CONTEXT_LINES = 10  # Fallback line limit
 TEMPERATURE = 0.2
 
-PRESENCE_PENALTY = float(os.environ.get("PRESENCE_PENALTY", "0.6"))  # OpenAI-style
-FREQUENCY_PENALTY = float(os.environ.get("FREQUENCY_PENALTY", "0.3"))  # OpenAI-style
-REPEAT_PENALTY = float(os.environ.get("REPEAT_PENALTY", "1.1"))  # llama.cpp native (1.0 = off)
+PRESENCE_PENALTY = settings.presence_penalty
+FREQUENCY_PENALTY = settings.frequency_penalty
+REPEAT_PENALTY = settings.repeat_penalty
 
 _TOKENIZER = None
 

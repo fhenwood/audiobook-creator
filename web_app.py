@@ -20,10 +20,12 @@ import os
 import shutil
 import traceback
 import tempfile
+import asyncio
+from typing import List, Dict, Optional, Union, Any, Tuple
 from fastapi import FastAPI
 from openai import OpenAI
 from audiobook.core.text_extraction import process_book_and_extract_text, save_book
-from audiobook.tts.generator import process_audiobook_generation, validate_book_for_m4b_generation, sanitize_filename
+from audiobook.tts.generator import validate_book_for_m4b_generation, sanitize_filename
 from audiobook.core.emotion_tags import process_emotion_tags
 from audiobook.tts.voice_mapping import get_available_voices, get_voice_list
 from audiobook.tts.service import tts_service
@@ -33,6 +35,7 @@ from audiobook.utils.gpu_resource_manager import gpu_manager
 from audiobook.utils.background_runner import background_runner
 from audiobook.models.manager import model_manager, ModelType
 from dotenv import load_dotenv
+from audiobook.utils.logging_config import configure_logging, get_logger
 
 # Modular imports from app package
 from app.voice_utils import (
@@ -40,13 +43,17 @@ from app.voice_utils import (
     get_vibevoice_choices,
     get_voice_choices,
     get_installed_tts_engines,
+    get_installed_tts_engines,
     check_llm_availability,
 )
+from audiobook.models.voice_analyzer import voice_analyzer
 from app.handlers import (
-    validate_book_upload,
-    text_extraction_wrapper,
-    save_book_wrapper,
+    validate_book_upload, 
+    text_extraction_wrapper, 
+    save_book_wrapper, 
     generate_voice_sample,
+    chapter_extraction_wrapper,
+    save_chapters_wrapper
 )
 from app.jobs import (
     run_audiobook_job_background as _run_audiobook_job_background,
@@ -56,9 +63,16 @@ from app.jobs import (
 
 load_dotenv()
 
+# Configure logging
+configure_logging(log_file="app_user.log")
+logger = get_logger(__name__)
+
 # TTS Configuration
-TTS_BASE_URL = os.environ.get("TTS_BASE_URL", "http://localhost:8880/v1")
-TTS_API_KEY = os.environ.get("TTS_API_KEY", "not-needed")
+# TTS Configuration (In-Process)
+# TTS_BASE_URL and TTS_API_KEY are no longer used for Orpheus
+# but kept effectively empty to prevent errors if referenced
+TTS_BASE_URL = None
+TTS_API_KEY = None
 
 # Create voice samples directory
 os.makedirs("static_files/voice_samples", exist_ok=True)
@@ -75,15 +89,59 @@ app = FastAPI()
 from audiobook.api import api_app
 app.mount("/api", api_app)
 
-# Auto-resume callback - This will be set up after the Gradio app is defined
-# For now, we just mark stalled jobs on startup and let users manually resume
+# Auto-resume callback - defined before startup check
+def auto_resume_callback(job_id: str) -> bool:
+    """
+    Callback function to resume a stalled job.
+    Called by the AutoResumeService in a background thread.
+    """
+    logger.info(f"🤖 Auto-resume callback triggered for job {job_id}")
+    
+    job = job_manager.get_job(job_id)
+    if not job:
+        logger.error(f"Cannot auto-resume job {job_id}: Job not found")
+        return False
+        
+    if job.status != JobStatus.STALLED.value:
+        logger.warning(f"Job {job_id} is not in stalled state (status: {job.status})")
+        return False
+        
+    checkpoint = job.get_checkpoint()
+    if not checkpoint:
+        logger.error(f"Cannot auto-resume job {job_id}: No checkpoint")
+        return False
+        
+    # Prepare job for resume
+    if not job_manager.prepare_job_for_resume(job_id):
+        logger.error(f"Failed to prepare job {job_id} for resume")
+        return False
+    
+    # Ensure job directory exists
+    job_manager.create_job_directory(job_id)
+    
+    # Submit to background runner
+    # IMPORTANT: We are in a background thread here, so we use the thread-safe submit
+    def create_resume_coro():
+        return _resume_job_background(job_id, job, checkpoint)
+    
+    success = background_runner.submit_job(job_id, create_resume_coro)
+    if success:
+        logger.info(f"✅ Auto-resume job {job_id} submitted to background runner")
+    else:
+        logger.warning(f"⚠️ Failed to submit auto-resume job {job_id} (runner busy?)")
+        
+    return success
+
+# Register the callback BEFORE starting the service
+auto_resume_service.set_resume_callback(auto_resume_callback)
+
 def startup_stall_check():
     """Check for jobs that were running when the server stopped and mark them as stalled."""
     stalled = auto_resume_service.check_startup_stalled_jobs()
     if stalled:
-        print(f"🔄 Found {len(stalled)} job(s) that were in-progress and are now marked as stalled")
-        print(f"   Job IDs: {stalled}")
-        print(f"   These jobs can be resumed from the Jobs Dashboard")
+        logger.info(f"🔄 Found {len(stalled)} job(s) that were in-progress and are now marked as stalled")
+        logger.info(f"   Job IDs: {stalled}")
+        logger.info(f"   These jobs will be auto-resumed via the background service")
     
     # Start the auto-resume monitoring service
     auto_resume_service.start()
@@ -91,194 +149,24 @@ def startup_stall_check():
 # Run startup check
 startup_stall_check()
 
-def extract_title_from_filename(book_file):
-    """Extract book title from uploaded filename without extension"""
-    if book_file is None:
-        return ""
-    filename = os.path.basename(book_file.name)
-    title = os.path.splitext(filename)[0]
-    return sanitize_filename(title)
 
-def validate_book_upload(book_file, book_title):
-    """Validate book upload and return a notification"""
-    if book_file is None:
-        return gr.Warning("Please upload a book file first.")
-    
-    if not book_title:
-        book_title = os.path.splitext(os.path.basename(book_file.name))[0]
-
-    book_title = sanitize_filename(book_title)
-    
-    yield book_title
-    return gr.Info(f"Book '{book_title}' ready for processing.", duration=5)
-
-def text_extraction_wrapper(book_file):
-    """Wrapper for text extraction with validation and progress updates"""
-    if book_file is None:
-        yield None
-        return gr.Warning("Please upload a book file and enter a title first.")
-    
-    try:
-        last_output = None
-        # Pass through all yield values from the original function (always using calibre)
-        for output in process_book_and_extract_text(book_file):
-            last_output = output
-            yield output  # Yield each progress update
-        
-        # Final yield with success notification
-        yield last_output
-        return gr.Info("Text extracted successfully! You can now edit the content.", duration=5)
-    except ValueError as e:
-        # Handle validation errors specifically
-        print(e)
-        traceback.print_exc()
-        yield None
-        return gr.Warning(f"Book validation error: {str(e)}")
-    except Exception as e:
-        print(e)
-        traceback.print_exc()
-        yield None
-        return gr.Warning(f"Error extracting text: {str(e)}")
-
-def save_book_wrapper(text_content):
-    """Wrapper for saving book with validation"""
-    if not text_content:
-        return gr.Warning("No text content to save.")
-    
-    try:
-        save_book(text_content)
-        return gr.Info("📖 Book saved successfully as 'converted_book.txt'!", duration=10)
-    except Exception as e:
-        print(e)
-        traceback.print_exc()
-        return gr.Warning(f"Error saving book: {str(e)}")
-
-async def _run_audiobook_job_background(
-    job_id: str,
+async def generate_audiobook_wrapper(
     tts_engine: str, 
     narrator_voice: str, 
     output_format: str, 
-    book_file_path: str,
-    book_title: str,
-    add_emotion_tags: bool,
-    dialogue_voice: str = None,
-    reference_audio_path: str = None,
-    postprocess: bool = False,
-    vibevoice_voice: str = None,
-    vibevoice_temperature: float = 0.7,
-    vibevoice_top_p: float = 0.95,
-    use_vibevoice_dialogue: bool = False,
-    vibevoice_dialogue_voice: str = None
+    book_file: Any, 
+    add_emotion_tags_checkbox: bool, 
+    book_title: Optional[str] = None, 
+    use_dialogue_voice_checkbox: bool = False, 
+    dialogue_voice_selection: Optional[str] = None, 
+    vibevoice_voice: Optional[str] = None, 
+    postprocess: bool = False, 
+    vibevoice_temperature: float = 0.7, 
+    vibevoice_top_p: float = 0.95, 
+    use_vibevoice_dialogue: bool = False, 
+    vibevoice_dialogue_voice: Optional[str] = None,
+    verification_enabled: bool = False
 ):
-    """
-    Background async function that runs the audiobook generation.
-    This runs independently of the Gradio connection.
-    Progress is saved to job_manager so users can check status even after closing browser.
-    """
-    need_orpheus_tts = tts_engine == "Orpheus"
-    
-    try:
-        # =====================================================================
-        # PHASE 1: Emotion Tags (if enabled) - Uses LLM server (~12GB VRAM)
-        # =====================================================================
-        if add_emotion_tags:
-            job_manager.update_job_progress(job_id, "🚀 Starting LLM server for emotion tags...")
-            
-            # Acquire LLM server
-            success, gpu_message = gpu_manager.acquire_llm()
-            if not success:
-                job_manager.fail_job(job_id, f"Failed to start LLM server: {gpu_message}")
-                return
-            
-            try:
-                job_manager.update_job_progress(job_id, "🎭 Processing emotion tags...")
-                
-                # Run emotion tags processing
-                async for progress in process_emotion_tags(False):
-                    job_manager.update_job_progress(job_id, f"🎭 Emotion tags: {str(progress)[:100]}")
-                
-                # Copy emotion tags file to job directory for persistence
-                if os.path.exists("tag_added_lines_chunks.txt"):
-                    job_emotion_tags_path = job_manager.get_job_emotion_tags_path(job_id)
-                    shutil.copy2("tag_added_lines_chunks.txt", job_emotion_tags_path)
-                
-                job_manager.update_job_progress(job_id, "✅ Emotion tags added successfully!")
-            except Exception as e:
-                job_manager.fail_job(job_id, f"Emotion tags failed: {str(e)}")
-                traceback.print_exc()
-                return
-            finally:
-                # IMPORTANT: Release LLM server BEFORE starting TTS to free ~12GB VRAM
-                print(f"🔄 Job {job_id}: Releasing LLM server to free VRAM for TTS...")
-                gpu_manager.release_llm(immediate=True)
-        
-        # =====================================================================
-        # PHASE 2: TTS Generation - Uses Orpheus LLM (~5GB VRAM) for Orpheus engine
-        # =====================================================================
-        if need_orpheus_tts:
-            job_manager.update_job_progress(job_id, "🚀 Starting Orpheus LLM for TTS...")
-            
-            # Acquire Orpheus LLM
-            success, gpu_message = gpu_manager.acquire_orpheus()
-            if not success:
-                job_manager.fail_job(job_id, f"Failed to start Orpheus LLM: {gpu_message}")
-                return
-        
-        try:
-            job_manager.update_job_progress(job_id, "Starting audiobook generation...")
-            
-            # Pass through all yield values from the original function
-            async for output in process_audiobook_generation(
-                "Single Voice", 
-                narrator_voice, 
-                output_format, 
-                book_file_path, 
-                add_emotion_tags,
-                tts_engine=tts_engine,
-                reference_audio_path=reference_audio_path,
-                job_id=job_id,
-                dialogue_voice=dialogue_voice,
-                use_postprocessing=postprocess,
-                vibevoice_voice=vibevoice_voice,
-                vibevoice_temperature=vibevoice_temperature,
-                vibevoice_top_p=vibevoice_top_p,
-                use_vibevoice_dialogue=use_vibevoice_dialogue,
-                vibevoice_dialogue_voice=vibevoice_dialogue_voice
-            ):
-                # Update job progress with current output
-                if output:
-                    job_manager.update_job_progress(job_id, str(output)[:200])
-            
-            # Get the correct file extension based on the output format
-            generate_m4b_audiobook_file = output_format == "M4B (Chapters & Cover)"
-            file_extension = "m4b" if generate_m4b_audiobook_file else output_format.lower()
-            
-            # Set the audiobook file path according to the provided information
-            audiobook_path = os.path.join("generated_audiobooks", f"audiobook.{file_extension}")
-
-            # Rename the audiobook file to the book title
-            final_path = os.path.join("generated_audiobooks", f"{book_title}.{file_extension}")
-            if os.path.exists(audiobook_path):
-                os.rename(audiobook_path, final_path)
-                audiobook_path = final_path
-            
-            # Mark job as completed
-            job_manager.complete_job(job_id, audiobook_path)
-            print(f"✅ Job {job_id}: Audiobook generated successfully!")
-            
-        finally:
-            # Release Orpheus LLM after TTS generation
-            if need_orpheus_tts:
-                print(f"🔓 Job {job_id}: Releasing Orpheus LLM")
-                gpu_manager.release_orpheus()
-                
-    except Exception as e:
-        print(f"❌ Job {job_id}: Error - {e}")
-        traceback.print_exc()
-        job_manager.fail_job(job_id, str(e))
-
-
-async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, book_file, add_emotion_tags_checkbox, book_title=None, use_dialogue_voice_checkbox=False, dialogue_voice_selection=None, reference_audio=None, vibevoice_voice=None, postprocess=False, vibevoice_temperature=0.7, vibevoice_top_p=0.95, use_vibevoice_dialogue=False, vibevoice_dialogue_voice=None):
     """Wrapper for audiobook generation - starts a BACKGROUND JOB that runs independently.
     
     The job continues running even if you close the browser tab. Check the Jobs tab for progress.
@@ -298,7 +186,7 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
         yield None, None, None
         return
     if not output_format:
-        yield gr.Warning("Please select an output format."), None, None
+        yield gr.Warning("Please select an output format."), None, None, None
         yield None, None, None
         return
     
@@ -306,14 +194,8 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
     if tts_engine == "VibeVoice" and vibevoice_voice:
         narrator_voice = vibevoice_voice
     
-    # Validate Chatterbox requirements
-    if tts_engine == "Chatterbox":
-        if reference_audio is None or not os.path.exists(reference_audio):
-            yield gr.Warning("Please upload a reference audio sample for Chatterbox voice cloning."), None, None
-            yield None, None, None
-            return
-        voice_display = "cloned voice"
-    elif tts_engine == "VibeVoice":
+    # Validate engine requirements
+    if tts_engine == "VibeVoice":
         voice_display = vibevoice_voice if vibevoice_voice else "speaker_0"
     else:
         voice_display = narrator_voice
@@ -376,157 +258,32 @@ async def generate_audiobook_wrapper(tts_engine, narrator_voice, output_format, 
             book_title=book_title or "Untitled",
             add_emotion_tags=add_emotion_tags,
             dialogue_voice=effective_dialogue_voice,
-            reference_audio_path=reference_audio,
+            reference_audio_path=None,  # No longer using Chatterbox voice cloning
             postprocess=postprocess,
             vibevoice_voice=vibevoice_voice,
             vibevoice_temperature=vibevoice_temperature,
             vibevoice_top_p=vibevoice_top_p,
             use_vibevoice_dialogue=use_vibevoice_dialogue,
-            vibevoice_dialogue_voice=vibevoice_dialogue_voice
+            vibevoice_dialogue_voice=vibevoice_dialogue_voice,
+            verification_enabled=verification_enabled
         )
     
     if background_runner.submit_job(job_id, create_job_coro):
         yield gr.Info(f"🚀 Job {job_id} started in background! You can safely close this tab - check Jobs tab for progress.", duration=10), None, job_id
         yield f"🎙️ Job {job_id} is now running in the background.\n\n👉 **You can close this browser tab** - the job will continue running.\n\n📋 Check the **Jobs** tab to monitor progress and download when complete.", None, job_id
     else:
-        # A job is already running
+        # Another job is running - keep this job queued (PENDING status)
         running_jobs = background_runner.get_running_jobs()
-        job_manager.fail_job(job_id, "Another job is already running")
-        yield gr.Warning(f"❌ Cannot start job: Another job ({running_jobs[0] if running_jobs else 'unknown'}) is already running. Wait for it to complete."), None, job_id
-        yield None, None, job_id
-        return
-
-
-async def _resume_job_background(job_id: str, job, checkpoint):
-    """
-    Background async function that resumes a stalled audiobook generation job.
-    This runs independently of the Gradio connection.
-    """
-    need_orpheus_tts = job.tts_engine == "Orpheus"
-    add_emotion_tags = checkpoint.add_emotion_tags
-    
-    # Get job-specific paths
-    job_converted_book_path = job_manager.get_job_converted_book_path(job_id)
-    job_emotion_tags_path = job_manager.get_job_emotion_tags_path(job_id)
-    
-    try:
-        # Check if emotion tags need to be re-processed
-        emotion_tags_exist = os.path.exists(job_emotion_tags_path) or os.path.exists("tag_added_lines_chunks.txt")
-        if add_emotion_tags and not emotion_tags_exist:
-            job_manager.update_job_progress(job_id, "🎭 Re-processing emotion tags...")
-            
-            # First make sure converted_book.txt exists
-            converted_book_exists = os.path.exists(job_converted_book_path) or os.path.exists("converted_book.txt")
-            if not converted_book_exists:
-                book_path = checkpoint.book_file_path
-                if not os.path.exists(book_path):
-                    book_filename = os.path.basename(book_path)
-                    persistent_path = os.path.join("generated_audiobooks", f"_temp_{book_filename}")
-                    if os.path.exists(persistent_path):
-                        book_path = persistent_path
-                    else:
-                        job_manager.fail_job(job_id, "Book file not found for re-extracting text")
-                        return
-                
-                # Extract text from book
-                import subprocess
-                result = subprocess.run(
-                    ["ebook-convert", book_path, job_converted_book_path],
-                    capture_output=True, text=True
-                )
-                if result.returncode != 0:
-                    job_manager.fail_job(job_id, f"Failed to extract text: {result.stderr}")
-                    return
-                
-                shutil.copy2(job_converted_book_path, "converted_book.txt")
-            
-            # Re-process emotion tags
-            success, gpu_message = gpu_manager.acquire_llm()
-            if not success:
-                job_manager.fail_job(job_id, f"Failed to start LLM server: {gpu_message}")
-                return
-            
-            try:
-                async for progress in process_emotion_tags(False):
-                    job_manager.update_job_progress(job_id, f"🎭 Emotion tags: {str(progress)[:100]}")
-                
-                if os.path.exists("tag_added_lines_chunks.txt"):
-                    shutil.copy2("tag_added_lines_chunks.txt", job_emotion_tags_path)
-            except Exception as e:
-                job_manager.fail_job(job_id, f"Emotion tags failed: {str(e)}")
-                traceback.print_exc()
-                return
-            finally:
-                gpu_manager.release_llm(immediate=True)
-        
-        # Acquire Orpheus LLM if needed
-        if need_orpheus_tts:
-            job_manager.update_job_progress(job_id, "🚀 Starting Orpheus LLM for resume...")
-            success, gpu_message = gpu_manager.acquire_orpheus()
-            if not success:
-                job_manager.fail_job(job_id, f"Failed to start Orpheus LLM: {gpu_message}")
-                return
-        
-        try:
-            job_manager.update_job_progress(job_id, f"Resuming from {checkpoint.lines_completed} lines...")
-            
-            # Parse voice string to extract narrator and dialogue voices
-            narrator_voice = job.voice
-            dialogue_voice = None
-            if " (dialogue: " in job.voice:
-                parts = job.voice.split(" (dialogue: ")
-                narrator_voice = parts[0]
-                dialogue_voice = parts[1].rstrip(")")
-                print(f"📢 Parsed resume voices: narrator={narrator_voice}, dialogue={dialogue_voice}")
-            
-            # Resume generation with checkpoint
-            async for output in process_audiobook_generation(
-                "Single Voice", 
-                narrator_voice, 
-                job.output_format, 
-                checkpoint.book_file_path, 
-                checkpoint.add_emotion_tags,
-                tts_engine=job.tts_engine,
-                reference_audio_path=checkpoint.reference_audio_path if hasattr(checkpoint, 'reference_audio_path') else None,
-                job_id=job_id,
-                resume_checkpoint=checkpoint.to_dict(),
-                dialogue_voice=dialogue_voice,
-                use_postprocessing=job.postprocess if hasattr(job, 'postprocess') else False,
-                vibevoice_voice=job.vibevoice_voice if hasattr(job, 'vibevoice_voice') else None,
-                vibevoice_temperature=job.vibevoice_temperature if hasattr(job, 'vibevoice_temperature') else 0.7,
-                vibevoice_top_p=job.vibevoice_top_p if hasattr(job, 'vibevoice_top_p') else 0.95,
-                use_vibevoice_dialogue=job.use_vibevoice_dialogue if hasattr(job, 'use_vibevoice_dialogue') else False,
-                vibevoice_dialogue_voice=job.vibevoice_dialogue_voice if hasattr(job, 'vibevoice_dialogue_voice') else None
-            ):
-                if output:
-                    job_manager.update_job_progress(job_id, str(output)[:200])
-            
-            # Get the correct file extension
-            generate_m4b_audiobook_file = job.output_format == "M4B (Chapters & Cover)"
-            file_extension = "m4b" if generate_m4b_audiobook_file else job.output_format.lower()
-            
-            # Set the audiobook file path
-            audiobook_path = os.path.join("generated_audiobooks", f"audiobook.{file_extension}")
-            
-            # Rename to book title
-            final_path = os.path.join("generated_audiobooks", f"{job.book_title}.{file_extension}")
-            if os.path.exists(audiobook_path):
-                os.rename(audiobook_path, final_path)
-                audiobook_path = final_path
-            
-            # Mark job as completed
-            job_manager.complete_job(job_id, audiobook_path)
-            print(f"✅ Job {job_id}: Resume completed successfully!")
-            
-        finally:
-            if need_orpheus_tts:
-                print(f"🔓 Job {job_id}: Releasing Orpheus LLM")
-                gpu_manager.release_orpheus()
-                
-    except Exception as e:
-        print(f"❌ Job {job_id}: Resume error - {e}")
-        traceback.print_exc()
-        job_manager.fail_job(job_id, str(e))
+        job_manager.update_job_progress(job_id, f"⏳ Queued - waiting for job {running_jobs[0] if running_jobs else 'unknown'} to complete", 0)
+        # Reset status back to PENDING so it stays in queue
+        from audiobook.utils.job_manager import JobStatus
+        with job_manager._lock:
+            from audiobook.utils.database import db
+            import json
+            with db.get_cursor() as cursor:
+                cursor.execute("UPDATE jobs SET status = ? WHERE id = ?", (JobStatus.PENDING.value, job_id))
+        yield gr.Info(f"⏳ Job {job_id} queued! It will start automatically when the current job finishes.", duration=10), None, job_id
+        yield f"⏳ Job {job_id} is **queued**.\n\n👉 Another job is currently running. Your job will start automatically when it finishes.\n\n📋 Check the **Jobs** tab to monitor queue position.", None, job_id
 
 
 async def resume_job_wrapper(job_id):
@@ -570,157 +327,78 @@ async def resume_job_wrapper(job_id):
         yield gr.Info(f"🔄 Job {job_id} resumed in background! You can safely close this tab.", duration=10), None, job_id
         yield f"🎙️ Job {job_id} is continuing in the background.\n\n👉 **You can close this browser tab** - the job will continue running.\n\n📋 Check the **Jobs** tab to monitor progress and download when complete.", None, job_id
     else:
-        # A job is already running
+        # Another job is running - re-queue this job
         running_jobs = background_runner.get_running_jobs()
-        job_manager.fail_job(job_id, "Another job is already running")
-        yield gr.Warning(f"❌ Cannot resume job: Another job ({running_jobs[0] if running_jobs else 'unknown'}) is already running."), None, job_id
-        yield None, None, job_id
-        return
+        job_manager.update_job_progress(job_id, f"⏳ Queued for resume - waiting for job {running_jobs[0] if running_jobs else 'unknown'}", 0)
+        # Reset to PENDING so worker picks it up
+        job_manager.prepare_job_for_resume(job_id)  # This sets status back to PENDING
+        yield gr.Info(f"⏳ Job {job_id} queued for resume! It will continue when the current job finishes.", duration=10), None, job_id
+        yield f"⏳ Job {job_id} is **queued for resume**.\n\n👉 Another job is running. This job will automatically resume when it finishes.\n\n📋 Check the **Jobs** tab for updates.", None, job_id
 
-async def generate_voice_sample(engine_id, voice_id, sample_text, reference_audio=None, vibevoice_voice=None, use_postprocessing=False, vibevoice_temperature=0.7, vibevoice_top_p=0.95):
-    """Generate a voice sample using the selected engine."""
-    if not sample_text or not sample_text.strip():
-        return None, "Please enter some text to generate a sample."
-    
-    try:
-        engine_id = engine_id.lower()
-        
-        # Determine voice ID based on engine
-        if engine_id == "orpheus":
-            if not voice_id: return None, "Please select an Orpheus voice."
-        elif engine_id == "vibevoice":
-            # Override voice_id from Orpheus selector with VibeVoice selector input
-            voice_id = vibevoice_voice
-            if not voice_id: return None, "Please select a VibeVoice speaker."
-            
-        elif engine_id == "chatterbox":
-            if reference_audio is None: return None, "Please upload reference audio."
-        
-        # Handle zero-shot via voice selection (if voice_id is a path)
-        # For VibeVoice: keep the path as voice_id (engine checks voice param for file paths)
-        # For Chatterbox: use reference_audio parameter
-        if voice_id and os.path.exists(voice_id) and engine_id == "chatterbox":
-            # Chatterbox uses reference_audio for cloning
-            reference_audio = voice_id
-            voice_id = "cloned"
-        # For VibeVoice, keep the file path in voice_id (the engine handles it)
-            
-        # Generate using unified service
-        # Note: tts_service handles GPU resource acquisition automatically
-        result = await tts_service.generate(
-            text=sample_text.strip(),
-            engine=engine_id,
-            voice=voice_id,
-            reference_audio=reference_audio,
-            speed=0.9 if engine_id == "orpheus" else 1.0,
-            temperature=vibevoice_temperature if engine_id == "vibevoice" else 0.7,
-            top_p=vibevoice_top_p if engine_id == "vibevoice" else 0.95
-        )
-        
-        # Save to file - use basename if voice_id is a path
-        voice_name = voice_id
-        if voice_id and isinstance(voice_id, str) and ('/' in voice_id or '\\' in voice_id):
-            voice_name = os.path.splitext(os.path.basename(voice_id))[0]
-            
-        filename = f"{engine_id}_{voice_name or 'cloned'}_sample.wav"
-        filepath = os.path.join("static_files/voice_samples", filename)
-        
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
-        with open(filepath, "wb") as f:
-            f.write(result.audio_data)
-            
-        status = f"✅ Generated sample with {engine_id}"
-        
-        # Apply Enhanced Post-processing if requested
-        if use_postprocessing:
-            try:
-                from audiobook.utils.audio_enhancer import audio_pipeline
-                enhanced_path = os.path.join("static_files/voice_samples", f"enhanced_{filename}")
-                # Run only enhancement stages on TTS output (SR + Enhancement, skip Demucs)
-                processed_path, status_msg = audio_pipeline.process(
-                    filepath, 
-                    output_path=enhanced_path,
-                    enable_preprocessing=True,
-                    stages=['enhancement', 'sr']
-                )
-                if processed_path and os.path.exists(processed_path):
-                    filepath = processed_path
-                    status += f" + {status_msg}"
-            except Exception as e:
-                print(f"⚠️ Post-processing failed: {e}")
-                status += " (Post-processing failed)"
-            
-        return filepath, status
-        
-    except Exception as e:
-        traceback.print_exc()
-        return None, f"❌ Error: {str(e)}"
 
-def get_vibevoice_choices():
-    """Get VibeVoice choices from Voice Library only (no generic speakers)."""
-    # Only return custom voices from Voice Library (no generic speaker_0-3)
-    custom = [(f"🎤 {v.name}", v.path) for v in voice_manager.list_voices()]
-    if not custom:
-        # Fallback if no voices uploaded yet
-        return [("No voices - add some in Voice Library", "")]
-    return custom
-
-def get_voice_choices():
-    """Get voice choices for dropdown with descriptions."""
-    # Standard voices
-    voices = get_available_voices()
-    choices = [(f"{name} - {desc}", name) for name, desc in voices.items()]
-    
-    # Custom voices
-    custom_voices = voice_manager.list_voices()
-    for v in custom_voices:
-        choices.append((f"🎤 {v.name} (Custom)", v.path))
-        
-    return choices
-
-def get_installed_tts_engines():
-    """Get list of installed TTS engines."""
-    engines = []
-    
-    # Orpheus is the core engine, assumed available via container services
-    # Ideally we'd check checking health, but for now we always show it 
-    # if the service is configured.
-    engines.append("Orpheus")
-    
-    # Chatterbox requires XTTS v2 (placeholder assumption) or its own model
-    # User feedback indicates XTTS and Orpheus are distinct.
-    if model_manager.get_model_path("xtts-v2"):
-        engines.append("Chatterbox")
-        
-    # VibeVoice requires vibevoice-7b
-    if model_manager.get_model_path("vibevoice-7b"):
-        engines.append("VibeVoice")
-        
-    if not engines:
-        engines.append("(No Engines Installed)")
-        
-    return engines
-
-def check_llm_availability():
-    """Check if any LLM is installed for emotion tagging."""
-    models = model_manager.list_models()
-    for m in models:
-        # Check if type matches LLM and is installed
-        if m.definition.type == ModelType.LLM and m.installed:
-            return True
-    return False
 
 with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
     gr.Markdown("# 📖 Audiobook Creator")
-    gr.Markdown("Create professional audiobooks from your ebooks using Orpheus TTS or Chatterbox (with zero-shot voice cloning).")
+    gr.Markdown("Create professional audiobooks from your ebooks using Orpheus TTS, VibeVoice, or Maya (with voice cloning).")
     
     # Get voice choices once for use in all tabs
     voice_choices = get_voice_list()
     voice_descriptions = get_available_voices()
     
+    # Maya voices
+    from audiobook.tts.engines.maya import MAYA_VOICES
+    maya_voice_choices = [(v.name, v.id) for v in MAYA_VOICES]
+    
+    maya_voice_choices = [(v.name, v.id) for v in MAYA_VOICES]
+    
     with gr.Tabs():
+        # ==================== Voice Analysis / Cloning Tab ====================
+        with gr.TabItem("🧬 Voice Analysis & Cloning"):
+            gr.Markdown("### Analyze and Clone Voices")
+            gr.Markdown("Use Qwen2-Audio to analyze a reference audio file and generate a precise description for Maya1.")
+            
+            with gr.Row():
+                with gr.Column():
+                    analysis_audio_input = gr.Audio(
+                        label="Reference Voice Sample",
+                        type="filepath",
+                        sources=["upload", "microphone"]
+                    )
+                    
+                    analyze_btn = gr.Button("🔍 Analyze Voice (Requires ~16GB VRAM)", variant="primary")
+                    
+                with gr.Column():
+                    analysis_output = gr.Textbox(
+                        label="Generated Voice Description",
+                        placeholder="Voice analysis result will appear here...",
+                        lines=5,
+                        interactive=True,
+                        show_copy_button=True
+                    )
+                    gr.Markdown("👉 **Copy this description** and paste it into the 'Custom Description' field in the Voice Sampling tab (select Maya engine).")
+
+            def analyze_voice_action(audio_path):
+                if not audio_path:
+                    return "Please upload an audio file first."
+                
+                try:
+                    # Unload Maya if loaded to prevent OOM
+                    try:
+                        if 'maya' in tts_service._engine_instances:
+                            tts_service._engine_instances['maya'].unload()
+                    except Exception as e:
+                        logger.warning(f"Failed to unload Maya: {e}")
+
+                    return voice_analyzer.analyze_voice(audio_path)
+                except Exception as e:
+                    return f"Error analyzing voice: {str(e)}"
+
+            analyze_btn.click(
+                analyze_voice_action,
+                inputs=[analysis_audio_input],
+                outputs=[analysis_output]
+            )
+
         # ==================== Voice Sampling Tab ====================
         with gr.TabItem("🎙️ Voice Sampling"):
             gr.Markdown("### Preview TTS Voices")
@@ -734,7 +412,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                         choices=available_engines,
                         label="TTS Engine",
                         value=available_engines[0] if available_engines else None,
-                        info="Orpheus: Emotion control. Chatterbox: Voice cloning. VibeVoice: High fidelity."
+                        info="Orpheus: Emotion control. VibeVoice: High fidelity. Maya: Voice cloning."
                     )
                     
                     # Orpheus voice selector (visible by default)
@@ -753,18 +431,6 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                             interactive=False
                         )
                     
-                    # Chatterbox zero-shot reference audio (hidden by default)
-                    with gr.Group(visible=False) as chatterbox_voice_group:
-                        gr.Markdown("""🎤 **Zero-Shot Voice Cloning with Chatterbox**
-                        
-                        Upload a ~10 second reference audio sample to clone any voice.
-                        """)
-                        reference_audio_sampling = gr.Audio(
-                            label="Reference Audio Sample (Required for Chatterbox)",
-                            type="filepath",
-                            sources=["upload", "microphone"],
-                            interactive=True
-                        )
 
                     # VibeVoice selector (hidden by default)
                     with gr.Group(visible=False) as vibevoice_voice_group:
@@ -772,7 +438,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                         vibevoice_selector = gr.Dropdown(
                             choices=get_vibevoice_choices(),
                             label="Select Speaker",
-                            value="speaker_0",
+                            value=None,
                             info="Select one of the multi-speaker voices or a custom voice from Voice Library"
                         )
                         
@@ -793,6 +459,42 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                                 step=0.05,
                                 info="Lower = Focused, Higher = Diverse"
                             )
+                    
+                    # Maya selector (hidden by default)
+                    with gr.Group(visible=False) as maya_voice_group:
+                        gr.Markdown("### Maya Voices")
+                        
+                        # Add "Custom" option at the start
+                        maya_dropdown_choices = [("✨ Custom (Enter Below)", "custom")] + maya_voice_choices
+                        
+                        maya_selector = gr.Dropdown(
+                            choices=maya_dropdown_choices,
+                            label="Select Voice",
+                            value=maya_voice_choices[0][1] if maya_voice_choices else "custom",
+                            info="Select a preset or 'Custom' to enter your own description"
+                        )
+                        
+                        maya_description = gr.Textbox(
+                            label="Voice Description",
+                            value=MAYA_VOICES[0].description if MAYA_VOICES else "",
+                            interactive=True,
+                            placeholder="Enter a custom voice description (gender, age, accent, timbre, pacing, tone)...",
+                            lines=3
+                        )
+                        
+                        def update_maya_description(voice_id):
+                            if voice_id == "custom":
+                                return ""  # Clear for custom input
+                            for v in MAYA_VOICES:
+                                if v.id == voice_id:
+                                    return v.description
+                            return ""
+                            
+                        maya_selector.change(
+                            update_maya_description,
+                            inputs=[maya_selector],
+                            outputs=[maya_description]
+                        )
                     
                     sample_text = gr.Textbox(
                         label="Sample Text",
@@ -838,28 +540,21 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                     - **Leo** - Deep, authoritative
                     - **Dan** - Friendly, conversational
                     - **Zac** - Strong, confident narrator
-                    
-                    ---
-                    ### Chatterbox
-                    
-                    Zero-shot voice cloning - upload any ~10 second audio sample to clone that voice!
-                    
-                    Supports paralinguistic tags: `[laugh]`, `[chuckle]`, `[cough]`, etc.
                     """)
             
             # TTS engine change handler - toggle visibility of voice groups
             def update_tts_engine_visibility(tts_engine):
                 if tts_engine == "Orpheus":
                     return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
-                elif tts_engine == "Chatterbox":
+                elif tts_engine == "VibeVoice":
                     return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
-                else: # VibeVoice
+                else: # Maya
                     return gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
             
             tts_engine_sampling.change(
                 update_tts_engine_visibility,
                 inputs=[tts_engine_sampling],
-                outputs=[orpheus_voice_group, chatterbox_voice_group, vibevoice_voice_group]
+                outputs=[orpheus_voice_group, vibevoice_voice_group, maya_voice_group]
             )
             
             # Voice selector change handler
@@ -876,7 +571,17 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
             # Generate sample button handler
             generate_sample_btn.click(
                 generate_voice_sample,
-                inputs=[tts_engine_sampling, voice_selector, sample_text, reference_audio_sampling, vibevoice_selector, sample_postprocess, vibevoice_temperature_sampling, vibevoice_top_p_sampling],
+                inputs=[
+                    tts_engine_sampling, 
+                    voice_selector, 
+                    sample_text, 
+                    vibevoice_selector, 
+                    sample_postprocess, 
+                    vibevoice_temperature_sampling, 
+                    vibevoice_top_p_sampling, 
+                    maya_selector,
+                    maya_description  # Pass the description textbox value
+                ],
                 outputs=[audio_preview, sample_status]
             )
         
@@ -900,31 +605,61 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
 
             with gr.Row():
                 with gr.Column():
+
+                    
                     gr.Markdown('<div class="step-heading">✂️ Step 2: Extract & Edit Content</div>')
                     
-                    convert_btn = gr.Button("Extract Text", variant="primary")
+                    convert_btn = gr.Button("Extract Chapters", variant="primary")
                     
-                    with gr.Accordion("Editing Tips", open=True):
+                    with gr.Accordion("Extraction Tips", open=False):
                         gr.Markdown("""
-                        * Remove unwanted sections: Table of Contents, About the Author, Acknowledgements
-                        * Fix formatting issues or OCR errors
-                        * Check for chapter breaks and paragraph formatting
+                        * The system automatically identifies chapters and separates front/back matter
+                        * Uncheck "Include" for sections you don't want (TOC, Index, etc.)
+                        * You can edit titles directly in the table
+                        * Click "Compile Book" to save your selection
                         """)
+
+                    # State for storing raw chapter data
+                    chapters_state = gr.State([])
                     
-                    # Navigation buttons for the textbox
-                    with gr.Row():
-                        top_btn = gr.Button("↑ Go to Top", size="sm", variant="secondary")
-                        bottom_btn = gr.Button("↓ Go to Bottom", size="sm", variant="secondary")
-                    
-                    text_output = gr.Textbox(
-                        label="Edit Book Content", 
-                        placeholder="Extracted text will appear here for editing",
-                        interactive=True, 
-                        lines=15,
-                        elem_id="text_editor"
+                    # Dataframe for selecting/editing chapters
+                    chapters_table = gr.Dataframe(
+                        headers=["Include", "Title", "Content Preview"],
+                        datatype=["bool", "str", "str"],
+                        label="Select Chapters to Include",
+                        col_count=(3, "fixed"),
+                        type="array",
+                        interactive=True,
+                        wrap=True,
+                        value=[]
                     )
                     
-                    save_btn = gr.Button("Save Edited Text", variant="primary")
+                    compile_chapters_btn = gr.Button("Compile & Save Book", variant="secondary")
+                    
+                    with gr.Accordion("Advanced: Edit Full Text (Optional)", open=False):
+                         text_output = gr.Textbox(
+                            label="Manual Text Editor", 
+                            placeholder="Compiled text will appear here",
+                            interactive=True, 
+                            lines=10,
+                            elem_id="text_editor"
+                        )
+                         save_btn = gr.Button("Save Manual Edits", variant="secondary")
+
+                    
+                    # Extraction logic
+                    convert_btn.click(
+                        chapter_extraction_wrapper,
+                        inputs=[book_input],
+                        outputs=[chapters_table, chapters_state]
+                    )
+                    
+                    # Compilation logic
+                    compile_chapters_btn.click(
+                        save_chapters_wrapper,
+                        inputs=[chapters_state, chapters_table],
+                        outputs=[text_output]
+                    )
 
             with gr.Row():
                 with gr.Column():
@@ -936,7 +671,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                         choices=available_engines, # Reuse cached list or call again
                         label="TTS Engine",
                         value=available_engines[0] if available_engines else None,
-                        info="Orpheus: Emotion control. Chatterbox: Voice cloning. VibeVoice: High fidelity."
+                        info="Orpheus: Emotion control. VibeVoice: High fidelity. Maya: Voice cloning."
                     )
                     
                     with gr.Row():
@@ -1021,18 +756,7 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                             info="Voice for dialogue (text in quotes)"
                         )
                     
-                    # Chatterbox zero-shot reference audio (hidden by default)
-                    with gr.Group(visible=False) as chatterbox_audiobook_group:
-                        gr.Markdown("""🎤 **Zero-Shot Voice Cloning with Chatterbox**
-                        
-                        Upload a ~10 second reference audio sample to clone any voice for your audiobook.
-                        """)
-                        reference_audio_audiobook = gr.Audio(
-                            label="Reference Audio Sample (Required for Chatterbox)",
-                            type="filepath",
-                            sources=["upload", "microphone"],
-                            interactive=True
-                        )
+
                     
                     # Emotion tags checkbox (for Orpheus only)
                     with gr.Group() as emotion_tags_group:
@@ -1059,6 +783,12 @@ with gr.Blocks(css=css, theme=gr.themes.Default()) as gradio_app:
                         label="✨ Enhanced Post-processing (Whole Book)", 
                         value=False,
                         info="Run each chapter through audio enhancement (Speech Enhancement + Super-Resolution). Warning: Increases generation time significantly!"
+                    )
+                    
+                    verification_enabled_checkbox = gr.Checkbox(
+                        label="🛡️ Enable Transcription Verification (Minimize Hallucinations)",
+                        value=False,
+                        info="Transcribes generated audio using Whisper Largev3 and compares it with input text. Retries if they don't match. Slows down generation but increases accuracy."
                     )
                     
                     generate_btn = gr.Button("🚀 Generate Audiobook", variant="primary", size="lg")
@@ -1191,20 +921,7 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
                 
                 refresh_gpu_btn.click(
                     get_gpu_status,
-                    inputs=[
-                    book_title, book_input, text_output, 
-                    tts_engine_audiobook, narrator_voice, 
-                    use_dialogue_voice, dialogue_voice,
-                    add_emotion_tags_checkbox,
-                    reference_audio_audiobook,
-                    vibevoice_audiobook_selector,
-                    output_format,
-                    audiobook_postprocess,
-                    vibevoice_temperature_audiobook,
-                    vibevoice_top_p_audiobook,
-                    use_vibevoice_dialogue,
-                    vibevoice_dialogue_selector
-                ],
+                    inputs=[],
                     outputs=[gpu_status_output]
                 )
                 
@@ -1226,7 +943,7 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
                 # Check for jobs that have stalled (no activity for 5 minutes)
                 stalled = job_manager.check_for_stalled_jobs(stall_timeout_seconds=300)
                 if stalled:
-                    print(f"Marked {len(stalled)} jobs as stalled: {stalled}")
+                    logger.info(f"Marked {len(stalled)} jobs as stalled: {stalled}")
                 return get_jobs_dataframe()
             
             def view_job_details(job_id):
@@ -1540,7 +1257,7 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
         # ==================== Voice Library Tab ====================
         with gr.TabItem("🎤 Voice Library"):
             gr.Markdown("### Custom Voice Library")
-            gr.Markdown("Upload reference audio files for zero-shot voice cloning (Use with **Chatterbox** or **VibeVoice**).")
+            gr.Markdown("Upload reference audio files for zero-shot voice cloning (Use with **VibeVoice** or **Maya**).")
             
             with gr.Row():
                 with gr.Column(scale=1):
@@ -1606,6 +1323,140 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
                     voice_preview_player = gr.Audio(label="🎧 Selected Voice Preview", interactive=False)
                     
                     delete_status = gr.Markdown("")
+            
+            # ========== Maya Voice Cloning Section ==========
+            gr.Markdown("---")
+            gr.Markdown("### 🎭 Maya Voice Cloning")
+            gr.Markdown("Clone a voice from reference audio using Maya TTS with SNAC encoding.")
+            
+            with gr.Row():
+                with gr.Column(scale=1):
+                    maya_clone_audio = gr.Audio(
+                        label="Reference Audio (3-8 seconds ideal)",
+                        type="filepath",
+                        sources=["upload", "microphone"]
+                    )
+                    maya_clone_transcript = gr.Textbox(
+                        label="Reference Transcript",
+                        placeholder="What is said in the reference audio...",
+                        lines=2
+                    )
+                    with gr.Row():
+                        transcribe_btn = gr.Button("📝 Transcribe (Whisper)", variant="secondary")
+                        analyze_btn = gr.Button("🔍 Analyze Voice (Qwen)", variant="secondary")
+                    
+                    maya_clone_description = gr.Textbox(
+                        label="Voice Description (from analysis or custom)",
+                        placeholder="Analyzed or custom voice description...",
+                        lines=3,
+                        interactive=True
+                    )
+                
+                with gr.Column(scale=1):
+                    maya_clone_text = gr.Textbox(
+                        label="Text to Speak",
+                        placeholder="Enter text to speak in the cloned voice...",
+                        lines=4
+                    )
+                    generate_clone_btn = gr.Button("🎤 Generate with Cloned Voice", variant="primary")
+                    clone_status = gr.Markdown("")
+                    clone_audio_output = gr.Audio(label="Generated Audio", interactive=False)
+            
+            # Transcribe button handler
+            async def transcribe_reference(audio_path):
+                if not audio_path:
+                    return gr.update(value="Please upload audio first.")
+                
+                model = None
+                try:
+                    from faster_whisper import WhisperModel
+                    model = WhisperModel("base", device="cuda", compute_type="float16")
+                    segments, _ = model.transcribe(audio_path)
+                    transcript = " ".join([s.text for s in segments]).strip()
+                    return gr.update(value=transcript)
+                except Exception as e:
+                    return gr.update(value=f"Error: {e}")
+                finally:
+                    if model:
+                        del model
+                    import gc
+                    import torch
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+            
+            transcribe_btn.click(
+                transcribe_reference,
+                inputs=[maya_clone_audio],
+                outputs=[maya_clone_transcript]
+            )
+            
+            # Analyze voice button handler  
+            async def analyze_reference_voice(audio_path):
+                if not audio_path:
+                    return gr.update(value="Please upload audio first.")
+                
+                analyzer = None
+                try:
+                    from audiobook.models.voice_analyzer import VoiceAnalyzer
+                    analyzer = VoiceAnalyzer()
+                    await analyzer.load()
+                    description = await asyncio.get_running_loop().run_in_executor(
+                        None, lambda: analyzer.analyze_voice(audio_path)
+                    )
+                    return gr.update(value=description)
+                except Exception as e:
+                    return gr.update(value=f"Error: {e}")
+                finally:
+                    if analyzer:
+                        await analyzer.unload()
+            
+            analyze_btn.click(
+                analyze_reference_voice,
+                inputs=[maya_clone_audio],
+                outputs=[maya_clone_description]
+            )
+            
+            # Generate with cloned voice
+            async def generate_maya_clone(audio_path, transcript, description, text):
+                if not audio_path or not transcript or not text:
+                    return "Please provide audio, transcript, and text.", None
+                
+                engine = None
+                try:
+                    from audiobook.tts.engines.maya import MayaEngine
+                    engine = MayaEngine()
+                    result = await engine.generate_with_reference(
+                        text=text,
+                        reference_audio_path=audio_path,
+                        reference_transcript=transcript,
+                        voice_description=description if description else None
+                    )
+                    
+                    # Save to temp file
+                    import tempfile
+                    temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                    temp_file.write(result.audio_data)
+                    temp_file.close()
+                    
+                    return "✅ Generated successfully!", temp_file.name
+                except Exception as e:
+                    return f"❌ Error: {e}", None
+                finally:
+                    # Always unload to free VRAM
+                    if engine:
+                        engine.unload()
+                        import gc
+                        import torch
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+            
+            generate_clone_btn.click(
+                generate_maya_clone,
+                inputs=[maya_clone_audio, maya_clone_transcript, maya_clone_description, maya_clone_text],
+                outputs=[clone_status, clone_audio_output]
+            )
 
             async def upload_voice_handler(name, file, preprocess, smart_select, duration):
                 if not name or not file:
@@ -1701,24 +1552,73 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
     # Connections with proper handling of Gradio notifications
     
     # TTS engine change handler for audiobook tab - toggle visibility
+    # TTS engine change handler for audiobook tab - toggle visibility
     def update_audiobook_tts_visibility(tts_engine):
         if tts_engine == "Orpheus":
-            # Show Orpheus controls, hide others
-            return gr.update(visible=True), gr.update(visible=False), gr.update(visible=True), gr.update(visible=True), gr.update(visible=False), gr.update(), gr.update()
+            # [0] narrator_voice -> Visible
+            # [1] emotion_tags_group -> Visible
+            # [2] dialogue_voice_group -> Visible
+            # [3] vibevoice_audiobook_group -> Hidden
+            # [4] vibevoice_audiobook_selector -> Hidden
+            # [5] vibevoice_dialogue_selector -> Hidden
+            # [6] maya_voice_group -> Hidden
+            return (
+                gr.update(visible=True), 
+                gr.update(visible=True), 
+                gr.update(visible=True), 
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False),
+                gr.update(visible=False)
+            )
         elif tts_engine == "VibeVoice":
-            # Show VibeVoice controls AND refresh choices
+            # Refresh choices for VibeVoice
             new_choices = get_vibevoice_choices()
-            # If no choices, default might be None or first item?
-            # We keep current value if valid, but here we just refresh choices.
-            return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(visible=True), gr.update(choices=new_choices), gr.update(choices=new_choices)
-        else:  # Chatterbox
-            # Show Chatterbox controls
-            return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update(), gr.update()
+            
+            # [0] narrator_voice -> Hidden
+            # [1] emotion_tags_group -> Hidden
+            # [2] dialogue_voice_group -> Hidden
+            # [3] vibevoice_audiobook_group -> Visible
+            # [4] vibevoice_audiobook_selector -> Visible
+            # [5] vibevoice_dialogue_selector -> Visible
+            # [6] maya_voice_group -> Hidden
+            return (
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=True), 
+                gr.update(visible=True, choices=new_choices), 
+                gr.update(visible=True, choices=new_choices),
+                gr.update(visible=False)
+            )
+        elif tts_engine == "Maya":
+            # [0] narrator_voice -> Hidden
+            # ...
+            # [6] maya_voice_group -> Visible
+            return (
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False),
+                gr.update(visible=True)
+            )
+        else:
+            return (
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False), 
+                gr.update(visible=False),
+                gr.update(visible=False)
+            )
     
     tts_engine_audiobook.change(
         update_audiobook_tts_visibility,
         inputs=[tts_engine_audiobook],
-        outputs=[narrator_voice, chatterbox_audiobook_group, emotion_tags_group, dialogue_voice_group, vibevoice_audiobook_group, vibevoice_audiobook_selector, vibevoice_dialogue_selector]
+        outputs=[narrator_voice, emotion_tags_group, dialogue_voice_group, vibevoice_audiobook_group, vibevoice_audiobook_selector, vibevoice_dialogue_selector, maya_voice_group]
     )
     
     # Dialogue voice checkbox handler - show/hide dialogue voice dropdown
@@ -1746,11 +1646,11 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
     )
     
     convert_btn.click(
-        text_extraction_wrapper, 
+        chapter_extraction_wrapper, 
         inputs=[book_input], 
-        outputs=[text_output],
+        outputs=[chapters_table, chapters_state],
         queue=True,
-        api_name="extract_text"
+        api_name="extract_chapters"
     )
     
     save_btn.click(
@@ -1765,14 +1665,14 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
     gradio_app.load(
         fn=update_tts_engine_visibility,
         inputs=[tts_engine_sampling],
-        outputs=[orpheus_voice_group, chatterbox_voice_group, vibevoice_voice_group]
+        outputs=[orpheus_voice_group, vibevoice_voice_group, maya_voice_group]
     )
     
     # Update the generate_audiobook_wrapper to output progress text, file path, and job ID
     # Now includes automatic emotion tag processing if checkbox is enabled
     generate_btn.click(
         generate_audiobook_wrapper, 
-        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, add_emotion_tags_checkbox, book_title, use_dialogue_voice, dialogue_voice, reference_audio_audiobook, vibevoice_audiobook_selector, audiobook_postprocess, vibevoice_temperature_audiobook, vibevoice_top_p_audiobook, use_vibevoice_dialogue, vibevoice_dialogue_selector], 
+        inputs=[tts_engine_audiobook, narrator_voice, output_format, book_input, add_emotion_tags_checkbox, book_title, use_dialogue_voice, dialogue_voice, vibevoice_audiobook_selector, audiobook_postprocess, vibevoice_temperature_audiobook, vibevoice_top_p_audiobook, use_vibevoice_dialogue, vibevoice_dialogue_selector, verification_enabled_checkbox], 
         outputs=[audio_output, audiobook_file, current_job_id],
         queue=True,
         api_name="generate_audiobook"
@@ -1789,33 +1689,10 @@ To enable GPU management, ensure docker socket is mounted in docker-compose.yaml
     )
     
     # Navigation button functionality for textbox scrolling
-    top_btn.click(
-        None,
-        inputs=[],
-        outputs=[],
-        js="""
-        function() {
-            const textbox = document.querySelector('#text_editor textarea');
-            if (textbox) {
-                textbox.scrollTop = 0;
-            }
-        }
-        """
-    )
-    
-    bottom_btn.click(
-        None,
-        inputs=[],
-        outputs=[],
-        js="""
-        function() {
-            const textbox = document.querySelector('#text_editor textarea');
-            if (textbox) {
-                textbox.scrollTop = textbox.scrollHeight;
-            }
-        }
-        """
-    )
+
+
+    # Scroll buttons removed
+
 
 app = gr.mount_gradio_app(app, gradio_app, path="/")  # Mount Gradio at root
 

@@ -95,146 +95,120 @@ class VibeVoiceEngine(TTSEngine):
         self._cloned_voices: Dict[str, bytes] = {}
     
     async def initialize(self) -> bool:
-        """Initialize VibeVoice engine."""
-        try:
-            import torch
-            
-            # CPU/GPU Check
-            if not torch.cuda.is_available():
-                print(f"⚠️ {self.display_name} requires CUDA GPU. Skipping initialization.")
-                return False
-                
-            print(f"🔄 Loading {self.display_name} model ({self.model_size})...")
-            
-            # Acquire GPU resources (unloads other models)
-            success, msg = gpu_manager.acquire_vibevoice()
-            if not success:
-                print(f"❌ Failed to acquire GPU for {self.display_name}: {msg}")
-                return False
-
-            # Lazy import to avoid loading heavy deps if not used
-            try:
-                # Use inference-specific model class that supports .generate()
-                from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference as VibeVoiceForConditionalGeneration
-                VIBEVOICE_AVAILABLE = True
-            except ImportError:
-                try:
-                    from vibevoice.modular.modeling_vibevoice import VibeVoiceForConditionalGeneration
-                    VIBEVOICE_AVAILABLE = True
-                except ImportError:
-                    VIBEVOICE_AVAILABLE = False          
-            
-            if not VIBEVOICE_AVAILABLE:
-                print("⚠️ VibeVoice package structure mismatch. Trying import from vibevoice...")
-                from vibevoice import VibeVoice as VibeVoiceForConditionalGeneration
-
-            # Check for downloaded model
-            model_id = f"vibevoice-{self.model_size}" # e.g. vibevoice-7b
-            model_path = model_manager.get_model_path(model_id)
-            
-            load_path = model_path if model_path else "vibevoice/VibeVoice-7B"
-            if model_path:
-                print(f"📂 Using local model from: {model_path}")
-            else:
-                print(f"☁️ Using HuggingFace Hub model: {load_path}")
-            
-            # Run blocking load in executor to avoid blocking asyncio loop
-            loop = asyncio.get_running_loop()
-            
-            # Load Processor
-            from transformers import AutoProcessor
-            def _load_processor():
-                try:
-                    # Try AutoProcessor first
-                    return AutoProcessor.from_pretrained(load_path, trust_remote_code=True)
-                except Exception:
-                    # Fallback to manual import
-                    print(f"⚠️ AutoProcessor failed. Importing VibeVoiceProcessor manually.")
-                    try:
-                        from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
-                        return VibeVoiceProcessor.from_pretrained(load_path, trust_remote_code=True)
-                    except ImportError:
-                         # Try another known path
-                         from vibevoice.processor import VibeVoiceProcessor
-                         return VibeVoiceProcessor.from_pretrained(load_path, trust_remote_code=True)
-
-            self._processor = await loop.run_in_executor(None, _load_processor)
-
-            def _load_model():
-                # Force VRAM cleanup before loading to ensure space
-                import gc
-                import torch
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                    
-                # User prefers full precision / FP16 over 4-bit if VRAM allows (24GB fits 7B FP16)
-                try:
-                    print(f"🚀 Loading {self.display_name} in float16 (High Quality)...")
-                    return VibeVoiceForConditionalGeneration.from_pretrained(
-                        load_path, 
-                        trust_remote_code=True,
-                        torch_dtype=torch.float16,
-                        device_map="auto"
-                    )
-                except ImportError:
-                    # Fallback
-                    return VibeVoiceForConditionalGeneration.from_pretrained(load_path, trust_remote_code=True).to("cuda")
-                except Exception as e:
-                    print(f"⚠️ FP16 load failed, trying memory efficient 4-bit fallback: {e}")
-                    
-                    # Ensure failed FP16 allocation is cleared
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
-                        
-                    try:
-                        from transformers import BitsAndBytesConfig
-                        q_config = BitsAndBytesConfig(
-                            load_in_4bit=True,
-                            bnb_4bit_compute_dtype=torch.float16
-                        )
-                        return VibeVoiceForConditionalGeneration.from_pretrained(
-                            load_path,
-                            trust_remote_code=True,
-                            quantization_config=q_config,
-                            device_map="auto"
-                        )
-                    except Exception as e2:
-                        raise RuntimeError(f"Failed to load model: {e2}") from e2
-
-            self._model = await loop.run_in_executor(None, _load_model)
-            
-            self._initialized = True
-            print(f"✅ {self.display_name} initialized successfully")
+        """Initialize VibeVoice engine via subprocess."""
+        if self._initialized:
             return True
             
-        except ImportError as e:
-            print(f"⚠️ {self.display_name} dependency missing: {e}")
+        print(f"🔄 Initializing {self.display_name} (Subprocess Mode)...")
+        
+        # CPU/GPU Check
+        try:
+             import torch
+             if not torch.cuda.is_available():
+                 print(f"⚠️ {self.display_name} requires CUDA GPU.")
+                 return False
+        except:
+             return False
+
+        # Acquire resources
+        success, msg = gpu_manager.acquire_vibevoice()
+        if not success:
+            print(f"❌ Failed to acquire GPU: {msg}")
             return False
+
+        # Setup Subprocess
+        import multiprocessing as mp
+        from audiobook.tts.engines.vibevoice_worker import run_worker, WorkerCommand, WorkerResult
+        
+        try:
+            # Use 'spawn' for CUDA compatibility
+            ctx = mp.get_context('spawn')
+            self._cmd_q = ctx.Queue()
+            self._res_q = ctx.Queue()
+            
+            self._process = ctx.Process(
+                target=run_worker,
+                args=(self._cmd_q, self._res_q, self.model_size),
+                daemon=True
+            )
+            self._process.start()
+            print(f"🚀 VibeVoice Worker started (PID: {self._process.pid})")
+            
+            # Send Init Command
+            loop = asyncio.get_running_loop()
+            
+            def _send_init():
+                self._cmd_q.put(WorkerCommand("INIT"))
+                return self._res_q.get(timeout=60) # High timeout for model load
+                
+            result = await loop.run_in_executor(None, _send_init)
+            
+            if result.success:
+                self._initialized = True
+                print(f"✅ {self.display_name} initialized successfully")
+                return True
+            else:
+                print(f"❌ Worker init failed: {result.error}")
+                self._kill_process()
+                return False
+                
         except Exception as e:
-            print(f"❌ Failed to initialize {self.display_name}: {e}")
+            print(f"❌ Failed to start worker: {e}")
+            self._kill_process()
             return False
     
     async def shutdown(self) -> None:
-        """Shutdown the engine and release GPU resources."""
-        if self._model:
-            del self._model
-            self._model = None
-            
-            # Try to force garbage collection
-            import torch
-            import gc
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                
-        self._cloned_voices.clear()
+        """Shutdown worker process to force VRAM release."""
+        print(f"🛑 Shutting down VibeVoice worker...")
+        
+        # Lazy import
+        from audiobook.utils.gpu_resource_manager import gpu_manager
+        gpu_manager.log_gpu_stats("VibeVoice Pre-Shutdown")
+        
+        self._kill_process()
+        
         self._initialized = False
-        print(f"🔓 {self.display_name} shutdown")
-    
+        gpu_manager.log_gpu_stats("VibeVoice Post-Shutdown")
+        
+        # Double check VRAM releases
+        import gc
+        import torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        print(f"✅ VibeVoice shutdown complete (Process Terminated)")
+
+    def _kill_process(self):
+        """Helper to terminate process safely."""
+        from audiobook.tts.engines.vibevoice_worker import WorkerCommand
+        import queue
+        
+        if hasattr(self, "_process") and self._process and self._process.is_alive():
+            try:
+                # Try graceful first
+                if hasattr(self, "_cmd_q"):
+                    self._cmd_q.put(WorkerCommand("SHUTDOWN"))
+                    self._process.join(timeout=3)
+            except:
+                pass
+            
+            # Force kill if still alive
+            if self._process.is_alive():
+                print("⚠️ Force killing worker process...")
+                self._process.terminate()
+                self._process.join(timeout=1)
+                
+                if self._process.is_alive():
+                    self._process.kill()
+                    
+        self._process = None
+        self._cmd_q = None
+        self._res_q = None
+
+    def get_default_voice(self) -> str:
+        return "speaker_0"
+
     def get_available_voices(self) -> List[VoiceInfo]:
         """Get available VibeVoice speakers plus any cloned voices."""
         voices = VIBEVOICE_SPEAKERS.copy()
@@ -260,150 +234,59 @@ class VibeVoiceEngine(TTSEngine):
         reference_audio: Optional[bytes] = None,
         **kwargs
     ) -> GenerationResult:
-        """Generate speech using VibeVoice."""
-        if not self._initialized or not self._model:
+        """Generate speech via worker process."""
+        print(f"DEBUG: VibeVoice generate_speech called with voice={voice}")
+        print(f"DEBUG: reference_audio type: {type(reference_audio)}")
+        if reference_audio:
+            if isinstance(reference_audio, str):
+                 print(f"DEBUG: reference_audio path: {reference_audio}")
+            elif isinstance(reference_audio, bytes):
+                 print(f"DEBUG: reference_audio bytes len: {len(reference_audio)}")
+        
+        # Check if process is alive
+        if not self._initialized or not hasattr(self, "_process") or not self._process or not self._process.is_alive():
             success = await self.initialize()
             if not success:
-                raise RuntimeError(f"{self.display_name} is not available (GPU required)")
-        
+                raise RuntimeError("Service unavailable - could not start worker")
+                
+        # Smart detection: If voice is a file path and reference_audio is missing, use voice as reference
+        if reference_audio is None and isinstance(voice, str) and (voice.endswith(".wav") or voice.endswith(".mp3") or "/" in voice):
+            if os.path.exists(voice):
+                print(f"DEBUG: Detected voice argument is path, using as reference_audio: {voice}")
+                reference_audio = voice
+                
         try:
-            # Prepare reference audio if needed
-            if reference_audio:
-                # TODO: Implement reference audio handling for library
-                pass
-            elif voice in self._cloned_voices:
-                # TODO: Retrieve cached clone
-                pass
-            
-            # Run generation in executor
             loop = asyncio.get_running_loop()
             
-            # Define wrapper for blocking call
-            def _generate():
-                # Extract speaker ID and handle Zero Shot cloning
-                speaker_id = 0
-                voice_samples = None
-                
-                # Check if voice is a file path (Zero Shot)
-                import os
-                path_exists = os.path.exists(voice)
-                is_file = os.path.isfile(voice)
-                
-                if isinstance(voice, str) and path_exists and is_file:
-                    # Zero Shot Mode
-                    print(f"🎤 VibeVoice: Zero-Shot Cloning from {voice}")
-                    voice_samples = [voice] # Mapped to Speaker 0
-                    speaker_id = 0
-                
-                # Else check for speaker_ID format
-                elif isinstance(voice, str) and voice.startswith("speaker_"):
-                    try:
-                        speaker_id = int(voice.split("_")[1])
-                    except ValueError:
-                        pass
-                
-                # Format text as script
-                if voice_samples:
-                    if not text.strip().startswith("Speaker"):
-                        script_text = f"Speaker 1: {text}"
-                    else:
-                        script_text = text
-                else:
-                    script_text = f"Speaker {speaker_id}: {text}"
-                
-                # Process text inputs
-                default_voice_paths = [
-                    "/app/models/tts/xtts-v2/samples/en_sample.wav",
-                    "/app/static_files/voice_samples/zac_sample.wav",
-                    "/app/audio_samples/default_voice.wav"
-                ]
-                
-                if voice_samples:
-                    inputs = self._processor(text=script_text, voice_samples=voice_samples, return_tensors="pt")
-                else:
-                    fallback_voice = None
-                    for path in default_voice_paths:
-                        if os.path.exists(path):
-                            fallback_voice = path
-                            break
-                    
-                    if fallback_voice:
-                        inputs = self._processor(text=script_text, voice_samples=[fallback_voice], return_tensors="pt")
-                    else:
-                        inputs = self._processor(text=script_text, return_tensors="pt")
-
-                # Move to GPU safely
-                import torch
-                cuda_inputs = {}
-                for k, v in inputs.items():
-                    if v is not None and hasattr(v, "to"):
-                        cuda_inputs[k] = v.to("cuda")
-                
-                # Generate
-                return self._model.generate(
-                    **cuda_inputs,
-                    tokenizer=self._processor.tokenizer,
-                    temperature=temperature,
-                    top_p=top_p,
-                    do_sample=True,
-                    cfg_scale=1.3
-                )
+            payload = {
+                "text": text,
+                "voice": voice,
+                "temperature": temperature,
+                "top_p": top_p,
+                "reference_audio": reference_audio
+            }
             
-            audio_output = await loop.run_in_executor(None, _generate)
+            # Helper to blocking send/recv
+            from audiobook.tts.engines.vibevoice_worker import WorkerCommand
+            def _do_work():
+                self._cmd_q.put(WorkerCommand("GENERATE", payload))
+                return self._res_q.get(timeout=300) # 5 min timeout for long form
             
-            # Extract audio
-            import torch
-            import numpy as np
+            result = await loop.run_in_executor(None, _do_work)
             
-            if hasattr(audio_output, "speech_outputs") and audio_output.speech_outputs:
-                speech_list = audio_output.speech_outputs
-                if isinstance(speech_list, list) and len(speech_list) > 0:
-                    audio_tensors = [s.cpu() if hasattr(s, "cpu") else torch.tensor(s) for s in speech_list]
-                    audio_array = torch.cat(audio_tensors, dim=-1).numpy()
-                else:
-                    raise RuntimeError("VibeVoice returned empty speech_outputs")
-            elif hasattr(audio_output, "cpu"):
-                # Fallback: direct tensor output
-                audio_array = audio_output.cpu().numpy()
-            elif isinstance(audio_output, list):
-                audio_array = np.array(audio_output)
-            else:
-                # Try index access (ModelOutput)
-                audio_array = audio_output[0].cpu().numpy()
-
-            # Squeeze if needed (1, T) -> (T,) or (1, 1, T) -> (T,)
-            while len(audio_array.shape) > 1 and audio_array.shape[0] == 1:
-                audio_array = audio_array.squeeze(0)
-            
-            # Convert numpy/tensor to bytes (WAV)
-            import io
-            import wave
-            
-            # Scale if float -1..1 => int16
-            if audio_array.dtype.kind == 'f':
-                audio_array = np.clip(audio_array, -1.0, 1.0)
-                audio_array = (audio_array * 32767).astype(np.int16)
-
-            wav_buffer = io.BytesIO()
-            with wave.open(wav_buffer, 'wb') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(24000)
-                wav_file.writeframes(audio_array.tobytes())
-            
+            if not result.success:
+                raise RuntimeError(f"Worker Error: {result.error}")
+                
             return GenerationResult(
-                audio_data=wav_buffer.getvalue(),
+                audio_data=result.data,
                 sample_rate=24000,
                 voice_id=voice,
-                metadata={
-                    "engine": self.name,
-                    "model": self.model_size
-                }
+                metadata={"engine": self.name, "mode": "subprocess"}
             )
             
         except Exception as e:
-            raise RuntimeError(f"VibeVoice generation failed: {e}") from e
-    
+            raise RuntimeError(f"VibeVoice generation failed: {e}")
+            
     async def clone_voice(
         self,
         audio_sample: bytes,
@@ -422,7 +305,4 @@ class VibeVoiceEngine(TTSEngine):
     
     async def health_check(self) -> bool:
         """Check if engine is ready."""
-        return self._initialized and self._model is not None
-    
-    def get_default_voice(self) -> str:
-        return "speaker_0"
+        return self._initialized and self._process and self._process.is_alive()

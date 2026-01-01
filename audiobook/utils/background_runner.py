@@ -12,11 +12,17 @@ from typing import Dict, Optional, Any, Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+from audiobook.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class BackgroundTaskRunner:
     """
     Singleton that manages background audiobook generation tasks.
     Jobs run in a background thread/event loop, independent of the Gradio WebSocket connection.
+    
+    Concurrency is controlled by settings.max_concurrent_jobs (default: 1 due to GPU constraints).
     """
     
     _instance = None
@@ -37,15 +43,39 @@ class BackgroundTaskRunner:
         self._running_jobs: Dict[str, asyncio.Task] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
-        self._executor = ThreadPoolExecutor(max_workers=1)  # Only 1 job at a time (GPU constraint)
+        
+        # Load max concurrent jobs from config
+        try:
+            from audiobook.config import settings
+            self._max_concurrent_jobs = settings.max_concurrent_jobs
+        except Exception:
+            self._max_concurrent_jobs = 1  # Default fallback
+        
+        self._executor = ThreadPoolExecutor(max_workers=self._max_concurrent_jobs)
         self._start_background_loop()
+        logger.info(f"Background runner initialized with max_concurrent_jobs={self._max_concurrent_jobs}")
+    
+    @property
+    def max_concurrent_jobs(self) -> int:
+        """Get the maximum number of concurrent jobs allowed."""
+        return self._max_concurrent_jobs
+    
+    @property
+    def active_job_count(self) -> int:
+        """Get the number of currently running jobs."""
+        return len([j for j in self._running_jobs.values() if not j.done()])
+    
+    @property
+    def can_accept_job(self) -> bool:
+        """Check if we can accept another job based on concurrency limit."""
+        return self.active_job_count < self._max_concurrent_jobs
     
     def _start_background_loop(self):
         """Start a background event loop for running async tasks."""
         def run_loop():
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
-            print("🔄 Background task runner started")
+            logger.info("Background task runner started")
             self._loop.run_forever()
         
         self._thread = threading.Thread(target=run_loop, daemon=True, name="background-tasks")
@@ -68,29 +98,29 @@ class BackgroundTaskRunner:
                          This is called in the background loop, not the main thread.
         
         Returns:
-            True if job was submitted, False if a job is already running
+            True if job was submitted, False if at concurrency limit
         """
         if self._loop is None:
-            print("❌ Background loop not ready")
+            logger.error("Background loop not ready")
             return False
         
-        # Check if a job is already running (GPU constraint - only one at a time)
-        for existing_job_id, task in list(self._running_jobs.items()):
-            if not task.done():
-                print(f"⚠️ Cannot start job {job_id}: Job {existing_job_id} is already running")
-                return False
+        # Check if we're at the concurrency limit
+        if not self.can_accept_job:
+            running = self.get_running_jobs()
+            logger.warning(f"Cannot start job {job_id}: At concurrency limit ({self._max_concurrent_jobs}). Running: {running}")
+            return False
         
         async def run_job():
             try:
-                print(f"🚀 Starting background job {job_id}")
+                logger.info(f"Starting background job {job_id} ({self.active_job_count + 1}/{self._max_concurrent_jobs} slots)")
                 # Create the coroutine in the background loop
                 coro = coro_factory()
                 # Await the coroutine to completion (it's a regular async function, not a generator)
                 await coro
-                print(f"✅ Background job {job_id} completed")
+                logger.info(f"Background job {job_id} completed")
             except Exception as e:
-                print(f"❌ Background job {job_id} failed: {e}")
-                traceback.print_exc()
+                logger.error(f"Background job {job_id} failed: {e}")
+                logger.debug(traceback.format_exc())
             finally:
                 if job_id in self._running_jobs:
                     del self._running_jobs[job_id]
@@ -122,7 +152,7 @@ class BackgroundTaskRunner:
             task = self._running_jobs[job_id]
             if not task.done():
                 task.cancel()
-                print(f"⏹️ Cancelled job {job_id}")
+                logger.info(f"Cancelled job {job_id}")
                 return True
         return False
 

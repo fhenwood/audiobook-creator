@@ -33,10 +33,17 @@ from contextlib import contextmanager
 
 
 # Container configuration from environment
-LLM_SERVER_HOST = os.environ.get("LLM_SERVER_HOST", "llm_server")
-LLM_SERVER_PORT = os.environ.get("LLM_SERVER_PORT", "8000")
-ORPHEUS_LLAMA_HOST = os.environ.get("ORPHEUS_LLAMA_HOST", "orpheus_llama") 
-ORPHEUS_LLAMA_PORT = os.environ.get("ORPHEUS_LLAMA_PORT", "5006")
+from audiobook.config import settings
+
+# Configuration from Pydantic settings
+LLM_SERVER_HOST = settings.llm_server_host
+LLM_SERVER_PORT = settings.llm_server_port
+ORPHEUS_LLAMA_HOST = settings.orpheus_llama_host
+ORPHEUS_LLAMA_PORT = settings.orpheus_llama_port
+
+# Container names are derived from hostnames in docker-compose
+LLM_CONTAINER_NAME = LLM_SERVER_HOST
+ORPHEUS_CONTAINER_NAME = ORPHEUS_LLAMA_HOST
 
 # Docker API endpoint (when docker socket is mounted)
 DOCKER_SOCKET = "/var/run/docker.sock"
@@ -44,7 +51,7 @@ DOCKER_SOCKET = "/var/run/docker.sock"
 # Timeout settings
 CONTAINER_START_TIMEOUT = 120  # seconds to wait for container to be healthy
 HEALTH_CHECK_INTERVAL = 2  # seconds between health checks
-IDLE_TIMEOUT = int(os.environ.get("GPU_IDLE_TIMEOUT", "60"))  # seconds before stopping idle containers (reduced default)
+IDLE_TIMEOUT = settings.gpu_idle_timeout  # seconds before stopping idle containers
 
 
 class GPUResourceManager:
@@ -141,6 +148,25 @@ class GPUResourceManager:
             print(f"❌ Failed to start container {name}: {e}")
             return False
     
+    
+    def log_gpu_stats(self, context: str = ""):
+        """Log current GPU memory usage via nvidia-smi."""
+        try:
+            import subprocess
+            # Query memory.total, memory.used, memory.free
+            result = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=memory.total,memory.used,memory.free", "--format=csv,noheader,nounits"],
+                encoding="utf-8"
+            )
+            # Parse first GPU (assuming single GPU for now)
+            lines = result.strip().split('\n')
+            if lines:
+                total, used, free = map(int, lines[0].split(','))
+                pct = (used / total) * 100
+                print(f"📊 [GPU] {context}: {used}MiB / {total}MiB ({pct:.1f}%) | Free: {free}MiB")
+        except Exception:
+            pass # Silent failure for logging
+
     def _stop_container(self, name: str) -> bool:
         """Stop a container if running."""
         container = self._get_container(name)
@@ -149,10 +175,13 @@ class GPUResourceManager:
         
         if container.status != "running":
             return True
+            
+        self.log_gpu_stats(f"Pre-Stop {name}")
         
         try:
             print(f"🛑 Stopping container: {container.name}")
             container.stop(timeout=10)
+            self.log_gpu_stats(f"Post-Stop {name}")
             return True
         except Exception as e:
             print(f"❌ Failed to stop container {name}: {e}")
@@ -345,6 +374,82 @@ class GPUResourceManager:
         """
         # Nothing specific to do here for Docker
         pass
+
+    # =========================================================================
+    # Maya Management (In-process, needs safe VRAM headroom)
+    # =========================================================================
+
+    def acquire_maya(self) -> Tuple[bool, str]:
+        """
+        Acquire resources for Maya 1 (running in this process).
+        Requires ~8-12GB VRAM.
+        To be safe, we stop other heavy services.
+        """
+        with self._lock:
+            if not self._docker_available:
+                return True, "Docker not available, proceeding without container management"
+
+            # Force stop other known heavy GPU services
+            print("🛑 Stopping other GPU services to make room for Maya (~12GB)...")
+            msg_success, msg_text = self.stop_llm_services()
+            if msg_success:
+                 return True, f"Environment prepared for Maya: {msg_text}"
+            return False, f"Failed to stop services: {msg_text}"
+
+    def release_maya(self):
+        """Release Maya resources."""
+        pass
+
+    # =========================================================================
+    # Voice Analyzer Management (In-process, needs safe VRAM headroom)
+    # =========================================================================
+
+    def acquire_voice_analyzer(self) -> Tuple[bool, str]:
+        """
+        Acquire resources for Voice Analyzer (Qwen2-Audio, in-process).
+        Requires ~16GB VRAM.
+        To be safe, we stop all other GPU services.
+        """
+        with self._lock:
+            if not self._docker_available:
+                return True, "Docker not available, proceeding without container management"
+
+            # Force stop other GPU services
+            print("🛑 Stopping other GPU services to make room for Voice Analyzer (~16GB)...")
+            msg_success, msg_text = self.stop_llm_services()
+            if msg_success:
+                 return True, f"Environment prepared for Voice Analyzer: {msg_text}"
+            return False, f"Failed to stop services: {msg_text}"
+
+    def release_voice_analyzer(self):
+        """Release Voice Analyzer resources."""
+        pass
+
+    # =========================================================================
+    # Whisper Verification Management (In-process, needs safe VRAM headroom)
+    # =========================================================================
+
+    def acquire_whisper(self) -> Tuple[bool, str]:
+        """
+        Acquire resources for Whisper Verification (faster-whisper, in-process).
+        Requires ~2-4GB VRAM for small/medium, more for large.
+        We stop other heavy services to be safe.
+        """
+        with self._lock:
+            if not self._docker_available:
+                return True, "Docker not available, proceeding without container management"
+
+            # Force stop other GPU services
+            print("🛑 Stopping other GPU services to make room for Whisper...")
+            msg_success, msg_text = self.stop_llm_services()
+            if msg_success:
+                 return True, f"Environment prepared for Whisper: {msg_text}"
+            return False, f"Failed to stop services: {msg_text}"
+
+    def release_whisper(self):
+        """Release Whisper resources."""
+        pass
+
 
     
     # =========================================================================

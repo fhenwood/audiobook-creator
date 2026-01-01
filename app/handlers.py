@@ -8,7 +8,8 @@ Extracted from app.py for modularity.
 import os
 import traceback
 import gradio as gr
-from audiobook.core.text_extraction import process_book_and_extract_text, save_book
+import logging
+from audiobook.core.text_extraction import process_book_and_extract_text, save_book, split_text_into_chapters, extract_chapters_from_book
 from audiobook.tts.service import tts_service
 from audiobook.tts.generator import sanitize_filename
 
@@ -70,15 +71,79 @@ def save_book_wrapper(text_content):
         return gr.Warning(f"Error saving book: {str(e)}")
 
 
+def chapter_extraction_wrapper(book_file):
+    """
+    Extracts text and splits into chapters.
+    Returns: (dataframe_data, raw_chapters_list)
+    """
+    if book_file is None:
+        return gr.Warning("Please upload a book file first."), None
+    
+    try:
+        # Use new robust HTML extraction
+        chapters = extract_chapters_from_book(book_file.name)
+        
+        if not chapters:
+            logging.warning("⚠️ No chapters found using HTML extraction.")
+            return gr.Warning("No specific chapters found."), None
+
+        logging.info(f"✅ Extracted {len(chapters)} chapters (HTML method).")
+        
+        # Prepare dataframe data: [Include(bool), Title(str), Preview(str)]
+        df_data = []
+        for i, ch in enumerate(chapters):
+            preview = ch['content'][:100].replace('\n', ' ') + "..." if len(ch['content']) > 100 else ch['content']
+            df_data.append([bool(ch['include']), str(ch['title']), str(preview)])
+            
+        logging.info(f"Prepared {len(df_data)} rows. Yielding to Gradio.")
+        yield df_data, chapters
+        
+    except Exception as e:
+        logging.error(f"Error in chapter extraction: {e}")
+        traceback.print_exc()
+        yield gr.Warning(f"Error: {str(e)}"), None
+
+
+def save_chapters_wrapper(chapters, dataframe_data):
+    """
+    Re-assembles selected chapters and saves book.
+    """
+    try:
+        if not chapters or not dataframe_data:
+            return gr.Warning("No chapters to save.")
+            
+        selected_text_parts = []
+        
+        if len(chapters) != len(dataframe_data):
+             return gr.Warning("Data mismatch error. Please re-extract.")
+        
+        count = 0
+        for i, row in enumerate(dataframe_data):
+            if row[0]: 
+                title = row[1]
+                selected_text_parts.append(f"{title}\n\n{chapters[i]['content']}")
+                count += 1
+        
+        full_text = "\n\n".join(selected_text_parts)
+        
+        save_book(full_text)
+        return gr.Info(f"✅ Saved {count} chapters to 'converted_book.txt'!"), full_text
+        
+    except Exception as e:
+        print(f"Error saving chapters: {e}")
+        return gr.Warning(f"Error saving: {str(e)}")
+
+
 async def generate_voice_sample(
     engine_id, 
     voice_id, 
     sample_text, 
-    reference_audio=None, 
     vibevoice_voice=None, 
-    use_postprocessing=False, 
+    use_postprocessing=False,
     vibevoice_temperature=0.7, 
-    vibevoice_top_p=0.95
+    vibevoice_top_p=0.95,
+    maya_voice=None,
+    maya_description=None
 ):
     """Generate a voice sample using the selected engine."""
     if not sample_text or not sample_text.strip():
@@ -96,24 +161,25 @@ async def generate_voice_sample(
             voice_id = vibevoice_voice
             if not voice_id: 
                 return None, "Please select a VibeVoice speaker."
-        elif engine_id == "chatterbox":
-            if reference_audio is None: 
-                return None, "Please upload reference audio."
+        elif engine_id == "maya":
+            voice_id = maya_voice
+            # If description provided, we don't strictly need a voice ID, but it helps for filename
+            if not voice_id and not maya_description:
+                return None, "Please select a Maya voice or enter a custom description."
+            if not voice_id:
+                voice_id = "custom_maya"
         
         # Handle zero-shot via voice selection (if voice_id is a path)
-        if voice_id and os.path.exists(voice_id) and engine_id == "chatterbox":
-            reference_audio = voice_id
-            voice_id = "cloned"
             
         # Generate using unified service
         result = await tts_service.generate(
             text=sample_text.strip(),
             engine=engine_id,
             voice=voice_id,
-            reference_audio=reference_audio,
             speed=0.9 if engine_id == "orpheus" else 1.0,
             temperature=vibevoice_temperature if engine_id == "vibevoice" else 0.7,
-            top_p=vibevoice_top_p if engine_id == "vibevoice" else 0.95
+            top_p=vibevoice_top_p if engine_id == "vibevoice" else 0.95,
+            voice_description=maya_description if engine_id == "maya" else None
         )
         
         # Save to file - use basename if voice_id is a path

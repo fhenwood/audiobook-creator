@@ -145,6 +145,36 @@ class TTSService:
                 output.append(result)
         
         return output
+        
+    async def unload_engine(self, engine_name: str) -> None:
+        """
+        Unload a specific engine to free VRAM.
+        
+        Args:
+            engine_name: The name of the engine to unload.
+        """
+        # Lazy import to avoid circular dependency
+        from audiobook.utils.gpu_resource_manager import gpu_manager
+
+        engine = self._engine_instances.get(engine_name)
+        if engine:
+            print(f"🛑 Unloading engine: {engine_name}...")
+            gpu_manager.log_gpu_stats(f"Pre-Unload {engine_name}")
+            
+            try:
+                await engine.shutdown()
+            except Exception as e:
+                print(f"❌ Error shutting down {engine_name}: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # CRITICAL: Remove the engine from instances to release reference
+            del self._engine_instances[engine_name]
+            
+            gpu_manager.log_gpu_stats(f"Post-Unload {engine_name}")
+            
+            if self._current_engine == engine_name:
+                self._current_engine = None
     
     async def _get_or_load_engine(self, engine_name: str) -> TTSEngine:
         """Get engine instance, loading if necessary and unloading others."""

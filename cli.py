@@ -61,8 +61,9 @@ def add_emotion_tags(args):
 
 async def generate_audiobook_async(args):
     """Generate an audiobook from a book file."""
-    from audiobook.tts.generator import process_audiobook_generation
-    
+    from audiobook.core.job_service import job_service
+    from audiobook.utils.job_manager import JobProgress
+
     if not os.path.exists(args.book_file):
         print(f"❌ File not found: {args.book_file}")
         sys.exit(1)
@@ -78,34 +79,39 @@ async def generate_audiobook_async(args):
     }
     output_format = format_map.get(args.format.lower(), 'M4B (Chapters & Cover)')
     
-    # Check for Chatterbox reference audio
-    reference_audio = None
-    if args.engine.lower() == 'chatterbox':
-        if not args.reference:
-            print("❌ Chatterbox requires a reference audio file (--reference)")
-            sys.exit(1)
-        if not os.path.exists(args.reference):
-            print(f"❌ Reference audio not found: {args.reference}")
-            sys.exit(1)
-        reference_audio = args.reference
-    
     print(f"🎧 Generating audiobook...")
     print(f"   Engine: {args.engine}")
     print(f"   Voice: {args.voice}")
     print(f"   Format: {output_format}")
-    print(f"   Emotion tags: {'Yes' if args.emotion_tags else 'No'}")
+    print(f"   Verify: {'Yes' if args.verify else 'No'}")
     print()
-    
-    async for progress in process_audiobook_generation(
-        generation_mode='Single Voice',
-        narrator_voice=args.voice,
-        output_format=output_format,
-        book_file_path=args.book_file,
-        add_emotion_tags=args.emotion_tags and args.engine.lower() == 'orpheus',
-        tts_engine=args.engine,
-        reference_audio_path=reference_audio
-    ):
-        print(progress)
+
+    # Progress callback
+    async def on_progress(progress: JobProgress):
+        print(f"\r{progress}", end="", flush=True)
+        if progress.percent_complete >= 100:
+            print()
+
+    try:
+        job = await job_service.create_and_run_job(
+            book_title=os.path.basename(args.book_file),
+            book_path=args.book_file,
+            engine=args.engine,
+            voice=args.voice,
+            output_format=output_format,
+            add_emotion_tags=args.emotion_tags,
+            reference_audio_path=args.reference,
+            verification_enabled=args.verify,
+            on_progress=on_progress
+        )
+        
+        # Poll if needed (create_and_run_job waits, but job_service might need explicit wait logic?)
+        # job_service.create_and_run_job calls _run_job which does async for progress in pipeline.run()
+        # So it awaits completion.
+        
+    except Exception as e:
+        print(f"\n❌ CLI Generation Error: {e}")
+        sys.exit(1)
     
     print()
     print("✅ Audiobook generated successfully!")
@@ -157,7 +163,7 @@ Examples:
   %(prog)s generate mybook.epub                   Generate M4B audiobook
   %(prog)s generate mybook.epub --voice tara      Use Tara voice
   %(prog)s generate mybook.epub --format mp3      Output as MP3
-  %(prog)s generate mybook.epub --engine chatterbox --reference voice.wav
+  %(prog)s generate mybook.epub --engine maya --reference voice.wav
   %(prog)s sample zac                             Generate voice sample
   %(prog)s sample tara "Custom text here"         Sample with custom text
         """
@@ -183,11 +189,13 @@ Examples:
     gen_parser.add_argument('--format', '-f', default='m4b',
                            help='Output format (default: m4b). Options: m4b, mp3, wav, aac, flac, opus')
     gen_parser.add_argument('--engine', '-e', default='orpheus',
-                           help='TTS engine (default: orpheus). Options: orpheus, chatterbox')
+                           help='TTS engine (default: orpheus). Options: orpheus, vibevoice, maya')
     gen_parser.add_argument('--reference', '-r', 
-                           help='Reference audio for Chatterbox voice cloning')
+                           help='Reference audio for Maya voice cloning')
     gen_parser.add_argument('--emotion-tags', '-t', action='store_true',
                            help='Use emotion tags (Orpheus only, requires running emotion-tags first)')
+    gen_parser.add_argument('--verify', action='store_true',
+                           help='Enable Whisper verification (slow but accurate)')
     gen_parser.set_defaults(func=generate_audiobook)
     
     # Sample command

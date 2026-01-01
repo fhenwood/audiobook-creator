@@ -23,6 +23,7 @@ import traceback
 import os
 import subprocess
 from audiobook.utils.shell_commands import check_if_calibre_is_installed, run_shell_command_secure, validate_file_path_allowlist
+from audiobook.core.chapter_splitting import ChapterSplitter
 
 def validate_book_path(book_path):
     """
@@ -421,6 +422,14 @@ def process_book_and_extract_text(
         fout.write(text)
         yield text
 
+def split_text_into_chapters(text: str):
+    """
+    Split text into chapters with inclusion status.
+    """
+    splitter = ChapterSplitter()
+    return splitter.split(text)
+
+
 def main():
     # Default book path
     book_path = None
@@ -509,6 +518,178 @@ def main():
         print("    (This will generate the audiobook immediately.)\n")
 
         print("🚀 Happy audiobook creation!")
+
+
+def extract_chapters_from_book(book_path: str):
+    """
+    Extracts chapters directly using Calibre's HTMLZ conversion and BS4 parsing.
+    Bypasses regex guessing by relying on structural headers.
+    """
+    import zipfile
+    import tempfile
+
+    if not validate_book_path(book_path):
+        raise ValueError(f"Invalid book path: {book_path}")
+
+    # 1. Convert to HTMLZ using Calibre
+    # Use a unique temp file for the HTMLZ to avoid conflicts
+    with tempfile.NamedTemporaryFile(suffix=".htmlz", delete=False) as tf:
+        temp_htmlz = tf.name
+    
+    extract_dir = tempfile.mkdtemp(prefix="audiobook_extract_")
+    print(f"DEBUG: Using temp HTMLZ: {temp_htmlz}, extract_dir: {extract_dir}")
+    
+    try:
+        ebook_convert_bin = shutil.which("ebook-convert")
+        if not ebook_convert_bin:
+            raise RuntimeError("ebook-convert not found")
+            
+        # Create a clean environment for Calibre to avoid Python path conflicts
+        clean_env = os.environ.copy()
+        # Remove ALL Python-specific vars that might poison Calibre's internal Python
+        for var in list(clean_env.keys()):
+            if var.startswith("PYTHON"):
+                del clean_env[var]
+
+        command = [ebook_convert_bin, book_path, temp_htmlz]
+        print(f"DEBUG: Running command: {' '.join(command)}")
+        
+        # Run conversion with clean environment
+        result = run_shell_command_secure(command, ['ebook-convert'], env=clean_env)
+        if not result or result.returncode != 0:
+            error_msg = result.stderr if result else "Unknown error"
+            raise RuntimeError(f"Calibre conversion failed: {error_msg}")
+
+        chapters = []
+        
+        # 2. Extract index.html from HTMLZ
+        index_path = os.path.join(extract_dir, "index.html")
+        with zipfile.ZipFile(temp_htmlz, 'r') as zip_ref:
+            if "index.html" in zip_ref.namelist():
+                zip_ref.extract("index.html", extract_dir)
+            else:
+                raise RuntimeError("index.html not found in Calibre HTMLZ output")
+
+        from bs4 import BeautifulSoup
+        
+        with open(index_path, 'r', encoding='utf-8') as f:
+            soup = BeautifulSoup(f.read(), 'html.parser')
+
+        # Strategy: Find all H1-H6 headers and split content between them
+        current_title = "Front Matter"
+        current_elements = []
+        
+        body = soup.body
+        if not body:
+            body = soup # Fallback if no body tag
+            
+        # ebook-convert flattens the DOM significantly.
+        # We look for all tags in the body that are part of the story flow.
+        # find_all(True) gets all tags.
+        tags = []
+        # Usually it's either flat in the body or inside one wrapper div
+        top_level = body.find_all(recursive=False)
+        if len(top_level) == 1 and top_level[0].name == 'div':
+             tags = top_level[0].find_all(recursive=False)
+        else:
+             tags = top_level
+
+        if not tags:
+            # Absolute fallback: just find all paragraphs and headers in order
+            tags = body.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'div'])
+
+        from audiobook.core.chapter_splitting import ChapterSplitter
+        splitter = ChapterSplitter()
+
+        for tag in tags:
+            header = None
+            if tag.name and tag.name.lower() in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                header = tag
+            else:
+                # Look for a header directly inside this tag
+                header = tag.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+
+            if header:
+                # Found a new header (either the tag itself OR inside the tag)
+                # 1. Save previous chapter
+                full_text = "\n".join([e.get_text().strip() for e in current_elements if e.get_text().strip()])
+                
+                include = not splitter.is_exclude_heading(current_title)
+                if current_title == "Front Matter":
+                    include = False
+                
+                if full_text or current_title == "Front Matter":
+                    chapters.append({
+                        'title': current_title,
+                        'content': full_text,
+                        'include': include
+                    })
+                
+                # 2. Start new chapter
+                current_title = header.get_text(separator=' ').strip()
+                
+                # 3. Handle the rest of the current tag's content
+                if tag == header:
+                    current_elements = [] # Content will come from subsequent tags
+                else:
+                    # Tag contains the header. We want the text in tag that ISN'T in header.
+                    import copy
+                    tag_content_only = copy.copy(tag)
+                    # Find and remove the header from our copy
+                    h_in_copy = tag_content_only.find(header.name)
+                    if h_in_copy:
+                        h_in_copy.decompose()
+                    
+                    text_remainder = tag_content_only.get_text().strip()
+                    if text_remainder:
+                        current_elements = [tag_content_only]
+                    else:
+                        current_elements = []
+            else:
+                current_elements.append(tag)
+        
+        # Append last
+        if current_elements:
+            full_text = "\n".join([e.get_text().strip() for e in current_elements if e.get_text().strip()])
+            
+            from audiobook.core.chapter_splitting import ChapterSplitter
+            splitter = ChapterSplitter()
+            include = not splitter.is_exclude_heading(current_title)
+            if current_title == "Front Matter":
+                include = False
+
+            chapters.append({
+                'title': current_title,
+                'content': full_text,
+                'include': include
+            })
+        
+        # Fallback: if only one chapter and it's Front Matter/Excluded, or if No chapters found
+        if len(chapters) == 1 and (chapters[0]['title'] == "Front Matter" or not chapters[0]['include']):
+            chapters[0]['include'] = True
+            if chapters[0]['title'] == "Front Matter":
+                chapters[0]['title'] = "Full Text (No headers detected)"
+        elif not chapters and body.get_text().strip():
+            # Total fallback if no H1-H6 found at all
+            chapters.append({
+                'title': "Full Text (No chapters detected)",
+                'content': body.get_text().strip(),
+                'include': True
+            })
+
+    except ImportError:
+        raise RuntimeError("BeautifulSoup4 not installed. Cannot use HTML extraction.")
+    except Exception as e:
+        print(f"HTML Parsing failed: {e}")
+        raise e
+    finally:
+        # 5. Cleanup
+        if os.path.exists(temp_htmlz):
+            os.remove(temp_htmlz)
+        if os.path.exists(extract_dir):
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            
+    return chapters
 
 if __name__ == "__main__":
     main()

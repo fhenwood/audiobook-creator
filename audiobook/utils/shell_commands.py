@@ -70,7 +70,8 @@ def validate_file_path_allowlist(file_path):
     # Allowlist pattern for safe file paths
     # Allows: letters, numbers, spaces, hyphens, underscores, dots, forward slashes, commas
     # Specifically excludes shell metacharacters and command injection patterns
-    safe_path_pattern = r"^[a-zA-Z0-9\s\-_.:/'\\,]+\.[a-zA-Z0-9]{1,10}$|^[a-zA-Z0-9\s\-_.:/'\\,]+/$"
+    # Allows: letters, numbers, spaces, hyphens, underscores, dots, forward slashes, commas, parentheses, brackets, etc.
+    safe_path_pattern = r"^[a-zA-Z0-9\s\-_.:/'\\,()[\]\&@#!+=]+(\.[a-zA-Z0-9]{1,10})?$|^[a-zA-Z0-9\s\-_.:/'\\,()[\]\&@#!+=]+/$"
     
     # Additional check for relative path traversal
     safe_relative_pattern = r"^(?!.*\.\.)[a-zA-Z0-9\s\-_.:/'\\,]+$"
@@ -102,9 +103,9 @@ def validate_command_arguments_allowlist(args):
         # Allow safe argument patterns:
         safe_arg_patterns = [
             # File paths and extensions (no '..')
-            r"^(?!.*\.\.)[a-zA-Z0-9\s\-_.:/'\\,]+\.[a-zA-Z0-9]{1,10}$",
+            r"^(?!.*\.\.)[a-zA-Z0-9\s\-_.:/'\\,()[\]'!&@]+\.[a-zA-Z0-9]{1,10}$",
             # Directory paths (no '..')
-            r"^(?!.*\.\.)[a-zA-Z0-9\s\-_.:/'\\,]+/?$",
+            r"^(?!.*\.\.)[a-zA-Z0-9\s\-_.:/'\\,()[\]'!&@]+/?$",
             # Command flags like -y, --verbose, -map_metadata
             r'^-{1,2}[a-zA-Z0-9\-_:]+$',
             # Numbers with optional size suffixes and standalone numbers
@@ -115,14 +116,14 @@ def validate_command_arguments_allowlist(args):
             r'^[a-zA-Z0-9\-_]+:[a-zA-Z0-9\-_:]+$',
             # Basic alphanumeric values with safe punctuation
             r'^[a-zA-Z0-9\-_+=:,]+$',
-            # Metadata values (key=value with spaces, apostrophes, brackets)
-            r'^[a-zA-Z0-9\-_]+=[\w\s\-_.,:()[\]\'\"!?]+$',
-            # Date/time formats (ISO 8601 style)
-            r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$',
+            # Metadata values (key=value with spaces, apostrophes, brackets, and common punctuation)
+            r'^[a-zA-Z0-9\-_]+=[\w\s\-_.,:()[\]\'\"!?;&@#+=]+$',
+            # Date/time formats (ISO 8601 style with timezone)
+            r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}([+-]\d{2}:\d{2})?$',
             # Language codes and simple identifiers
             r'^[a-zA-Z]{2,3}$',
             # Simple words and phrases with common punctuation
-            r'^[\w\s\-_.()[\]\'\"!?,:]+$',
+            r'^[\w\s\-_.()[\]\'\"!?,:;&@#+=]+$',
         ]
         
         # Check if argument matches any safe pattern
@@ -130,7 +131,7 @@ def validate_command_arguments_allowlist(args):
         
         if not is_safe:
             # For debugging: print which argument failed validation
-            # print(f"Argument failed validation: {arg}")
+            print(f"❌ Argument failed validation: {arg}")
             return False
     
     return True
@@ -182,13 +183,14 @@ def validate_command_safety(command):
     
     return True
 
-def run_shell_command_secure(command, allowed_commands=None):
+def run_shell_command_secure(command, allowed_commands=None, env=None):
     """
     Securely runs a shell command using list-based subprocess calls.
     
     Args:
         command (str or list): The command to run
         allowed_commands (list): List of allowed command names (optional)
+        env (dict): Environment variables to use (optional)
         
     Returns:
         subprocess.CompletedProcess: The result of the command execution
@@ -206,6 +208,7 @@ def run_shell_command_secure(command, allowed_commands=None):
             
         # Validate command safety
         if not validate_command_safety(cmd_parts):
+            print(f"❌ Command safety validation failed for: {cmd_parts}")
             raise ValueError(f"Command contains potentially dangerous patterns: {cmd_parts}")
             
         # Check if command is in allowed list (compare basename for full paths)
@@ -218,7 +221,11 @@ def run_shell_command_secure(command, allowed_commands=None):
                 command_basename = command_basename[:-4]
             
             if command_basename not in allowed_commands:
+                print(f"❌ Command '{command_basename}' not in allowed list: {allowed_commands}")
                 raise ValueError(f"Command '{command_basename}' not in allowed commands list")
+            
+        # Use provided env or copy current one
+        run_env = env if env is not None else os.environ.copy()
             
         # Execute with secure subprocess call (no shell=True)
         result = subprocess.run(
@@ -226,15 +233,13 @@ def run_shell_command_secure(command, allowed_commands=None):
             capture_output=True,
             text=True,
             check=False,  # Don't raise exception on non-zero exit
-            env=os.environ.copy() # Pass environment variables explicitly
+            env=run_env
         )
         
-        if result.stderr and result.returncode != 0:
-            raise Exception(result.stderr)
-
+        # Don't raise here, let the caller handle result.returncode and result.stderr
         return result
         
     except Exception as e:
         print(f"Error in run_shell_command_secure: {e}")
-        traceback.print_exc()
+        # traceback.print_exc()
         return None

@@ -173,7 +173,7 @@ xlrd==1.2.0
 xlsxwriter==3.2.9
 zipp==3.23.0
 
-bitsandbytes
-accelerate
-clearvoice
-faster-whisper
+bitsandbytes==0.45.5
+accelerate==1.6.0
+clearvoice==0.1.2
+faster-whisper==1.2.1

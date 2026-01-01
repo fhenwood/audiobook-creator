@@ -20,6 +20,7 @@ from audiobook.tts.engines import list_engines, get_engine, VoiceInfo
 from audiobook.tts.service import tts_service
 from audiobook.utils.job_manager import job_manager
 from audiobook.models.manager import model_manager, ModelStatus
+from audiobook.config import settings
 
 
 # ============================================================================
@@ -315,6 +316,125 @@ async def delete_job(job_id: str):
     return {"status": "deleted", "job_id": job_id}
 
 
+@api_app.post("/jobs/{job_id}/resume", response_model=JobStatus)
+async def resume_job(job_id: str):
+    """
+    Resume a stalled job from its checkpoint.
+    
+    Only works for jobs with status 'stalled'.
+    """
+    from audiobook.utils.background_runner import background_runner
+    from audiobook.core.job_service import job_service
+    
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    
+    status_val = job.status.value if hasattr(job.status, 'value') else job.status
+    if status_val != "stalled":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Job is not stalled (status: {status_val}). Only stalled jobs can be resumed."
+        )
+    
+    checkpoint = job.get_checkpoint()
+    if not checkpoint:
+        raise HTTPException(status_code=400, detail="Job has no checkpoint to resume from")
+    
+    # Create coroutine factory for background runner
+    def create_resume_coro():
+        return job_service.resume_job(job_id)
+    
+    # Submit to background runner
+    if not background_runner.submit_job(job_id, create_resume_coro):
+        running_jobs = background_runner.get_running_jobs()
+        raise HTTPException(
+            status_code=409, 
+            detail=f"Cannot resume job: Another job ({running_jobs[0] if running_jobs else 'unknown'}) is already running"
+        )
+    
+    return JobStatus(
+        job_id=job.job_id,
+        status="running",
+        progress=job.progress,
+        message="Job resumed - processing in background",
+        created_at=job.created_at if isinstance(job.created_at, str) else job.created_at,
+        completed_at=None,
+        output_path=None
+    )
+
+
+@api_app.post("/jobs", response_model=JobStatus)
+async def create_job(request: JobCreateRequest):
+    """
+    Create and start a new audiobook generation job.
+    
+    The job runs in the background. Poll GET /jobs/{job_id} for status,
+    or connect to WebSocket /jobs/{job_id}/stream for real-time updates.
+    
+    Requires a book to be uploaded first via POST /books/upload.
+    """
+    from audiobook.utils.background_runner import background_runner
+    from audiobook.core.job_service import job_service
+    
+    # Validate book file exists
+    if not request.book_file_path:
+        raise HTTPException(status_code=400, detail="book_file_path is required")
+    
+    if not os.path.exists(request.book_file_path):
+        raise HTTPException(status_code=400, detail=f"Book file not found: {request.book_file_path}")
+    
+    # Normalize output format
+    output_format = request.output_format
+    if request.output_format.lower() == "m4b":
+        output_format = "M4B (Chapters & Cover)"
+    
+    # Create job in manager first to get the job_id
+    job = job_manager.create_job(
+        book_title=request.title,
+        tts_engine=request.engine,
+        voice=request.narrator_voice,
+        output_format=request.output_format,
+    )
+    job_id = job.job_id
+    
+    # Create coroutine factory for background runner using JobService
+    def create_job_coro():
+        return job_service._run_job(
+            job_id=job_id,
+            book_path=request.book_file_path,
+            engine=request.engine,
+            voice=request.narrator_voice,
+            output_format=output_format,
+            add_emotion_tags=request.use_emotion_tags,
+            dialogue_voice=None,
+            use_postprocessing=False,
+            reference_audio_path=None,
+            vibevoice_temperature=0.7,
+            vibevoice_top_p=0.95,
+        )
+    
+    # Submit to background runner
+    if not background_runner.submit_job(job_id, create_job_coro):
+        # Another job is already running
+        running_jobs = background_runner.get_running_jobs()
+        job_manager.fail_job(job_id, "Another job is already running")
+        raise HTTPException(
+            status_code=409, 
+            detail=f"Cannot start job: Another job ({running_jobs[0] if running_jobs else 'unknown'}) is already running"
+        )
+    
+    return JobStatus(
+        job_id=job.job_id,
+        status="pending",
+        progress=0,
+        message="Job started - processing in background",
+        created_at=job.created_at if isinstance(job.created_at, str) else job.created_at,
+        completed_at=None,
+        output_path=None
+    )
+
+
 # ============================================================================
 # Model Management Endpoints
 # ============================================================================
@@ -484,11 +604,11 @@ async def delete_voice(voice_id: str):
 async def get_settings():
     """Get current application settings."""
     return SettingsResponse(
-        default_engine=os.environ.get("DEFAULT_TTS_ENGINE", "orpheus"),
-        default_voice=os.environ.get("DEFAULT_TTS_VOICE", "zac"),
-        default_output_format=os.environ.get("DEFAULT_OUTPUT_FORMAT", "m4b"),
-        use_emotion_tags=os.environ.get("USE_EMOTION_TAGS", "true").lower() == "true",
-        enable_postprocessing=os.environ.get("ENABLE_POSTPROCESSING", "false").lower() == "true"
+        default_engine=settings.default_tts_engine,
+        default_voice=settings.default_tts_voice,
+        default_output_format=settings.default_output_format,
+        use_emotion_tags=settings.use_emotion_tags,
+        enable_postprocessing=settings.enable_postprocessing
     )
 
 
@@ -497,6 +617,86 @@ async def update_settings(settings: SettingsResponse):
     """Update application settings."""
     # For now, return the settings (full implementation would persist)
     return {"status": "updated", "settings": settings.model_dump()}
+
+
+# ============================================================================
+# Server-Sent Events (SSE) Job Streaming
+# ============================================================================
+
+@api_app.get("/jobs/{job_id}/events")
+async def job_events_sse(job_id: str):
+    """
+    SSE endpoint for real-time job progress updates.
+    
+    This is the preferred method for React/iOS clients as it's simpler than WebSocket.
+    
+    Usage (JavaScript):
+        const eventSource = new EventSource('/api/jobs/{job_id}/events');
+        eventSource.onmessage = (e) => console.log(JSON.parse(e.data));
+    
+    Usage (Swift):
+        Use URLSession with dataTask for SSE streaming.
+    
+    Events:
+        - progress: Job progress update with percentage and message
+        - complete: Job finished successfully
+        - error: Job failed or not found
+    """
+    from starlette.responses import StreamingResponse
+    from datetime import datetime
+    import json
+    
+    async def event_generator():
+        """Generate SSE events for job progress."""
+        last_progress = -1
+        last_message = ""
+        poll_count = 0
+        max_polls = 3600  # 1 hour max at 1 poll/second
+        
+        while poll_count < max_polls:
+            job = job_manager.get_job(job_id)
+            
+            if not job:
+                yield f"data: {json.dumps({'event': 'error', 'job_id': job_id, 'message': 'Job not found'})}\n\n"
+                break
+            
+            # Get current status
+            status_value = job.status.value if hasattr(job.status, 'value') else str(job.status)
+            current_progress = job.percent_complete
+            current_message = job.progress or ""
+            
+            # Send progress update if changed
+            if current_progress != last_progress or current_message != last_message:
+                yield f"data: {json.dumps({'event': 'progress', 'job_id': job_id, 'status': status_value, 'progress': current_progress, 'message': current_message, 'timestamp': datetime.now().isoformat()})}\n\n"
+                last_progress = current_progress
+                last_message = current_message
+            
+            # Check for terminal states
+            if status_value == "completed":
+                yield f"data: {json.dumps({'event': 'complete', 'job_id': job_id, 'progress': 100, 'message': 'Job completed successfully', 'output_path': job.output_file, 'timestamp': datetime.now().isoformat()})}\n\n"
+                break
+            elif status_value == "failed":
+                yield f"data: {json.dumps({'event': 'error', 'job_id': job_id, 'message': job.error_message or 'Job failed', 'timestamp': datetime.now().isoformat()})}\n\n"
+                break
+            elif status_value == "stalled":
+                yield f"data: {json.dumps({'event': 'stalled', 'job_id': job_id, 'progress': current_progress, 'message': 'Job stalled - can be resumed', 'timestamp': datetime.now().isoformat()})}\n\n"
+                break
+            
+            poll_count += 1
+            await asyncio.sleep(1)
+        
+        # Send end event
+        yield f"data: {json.dumps({'event': 'end', 'job_id': job_id})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 
 # ============================================================================

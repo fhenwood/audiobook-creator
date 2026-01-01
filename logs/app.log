@@ -1,0 +1,446 @@
+2025-12-30 16:14:42 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 16:14:43 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 16:19:58 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 16:19:58 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 16:21:54 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 16:21:54 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 16:50:03 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 16:50:04 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 16:55:23 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 16:55:23 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:10:36 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:10:37 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:10:50 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:10:50 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:11:19 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:11:20 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:11:34 - vibevoice.modular.modular_vibevoice_tokenizer - WARNING - APEX FusedRMSNorm not available, using native implementation
+2025-12-30 17:11:35 - vibevoice.processor.vibevoice_processor - INFO - Loading tokenizer from Qwen/Qwen2.5-7B
+2025-12-30 17:11:36 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 17:11:52 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:11:53 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:12:41 - vibevoice.modular.modular_vibevoice_tokenizer - WARNING - APEX FusedRMSNorm not available, using native implementation
+2025-12-30 17:12:41 - vibevoice.processor.vibevoice_processor - INFO - Loading tokenizer from Qwen/Qwen2.5-7B
+2025-12-30 17:12:42 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 17:30:17 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:30:18 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:43:30 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:43:30 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:43:47 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 17:43:49 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 17:43:56 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 17:43:57 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 17:43:58 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 17:47:38 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:47:38 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:49:50 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:49:51 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:51:50 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 17:51:51 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 17:51:59 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 17:52:00 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 17:52:00 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 17:52:00 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 17:52:49 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 2082])
+2025-12-30 17:52:49 - audiobook.tts.engines.maya - INFO - Generated 2000 new tokens
+2025-12-30 17:52:49 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [140709, 131816, 134641, 139124, 143220, 148592, 151659, 155747, 129671, 134208, 138472, 142809, 146738, 150943, 154754, 130854, 132589, 137344, 144395, 144999]
+2025-12-30 17:52:50 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 2000
+2025-12-30 17:54:08 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:54:08 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:54:18 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 17:54:19 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 17:54:27 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 17:54:27 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 17:54:28 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 17:54:28 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 17:55:18 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 2082])
+2025-12-30 17:55:18 - audiobook.tts.engines.maya - INFO - Generated 2000 new tokens
+2025-12-30 17:55:18 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [143976, 129221, 134930, 137961, 141133, 145505, 151467, 154283, 131503, 133891, 138498, 141107, 144728, 151127, 155797, 131503, 134512, 138543, 142639, 145952]
+2025-12-30 17:55:18 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 2000
+2025-12-30 17:57:07 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:57:07 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:58:06 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:58:07 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:59:07 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 17:59:07 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 17:59:13 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 17:59:14 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 17:59:22 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 17:59:22 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 17:59:23 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 17:59:23 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 17:59:42 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 735])
+2025-12-30 17:59:42 - audiobook.tts.engines.maya - INFO - Generated 652 new tokens
+2025-12-30 17:59:42 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [132151, 134893, 137637, 144384, 147181, 151166, 154665, 128983, 133025, 137369, 142756, 148731, 149881, 153977, 130380, 134047, 137341, 141437, 148472, 149312]
+2025-12-30 17:59:42 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 651
+2025-12-30 18:00:00 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:00:28 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 1199])
+2025-12-30 18:00:28 - audiobook.tts.engines.maya - INFO - Generated 1114 new tokens
+2025-12-30 18:00:28 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [130380, 135702, 138281, 141562, 146465, 151166, 153850, 130273, 136443, 137593, 143025, 148731, 149881, 153725, 131283, 133052, 140199, 143002, 146859, 149155]
+2025-12-30 18:00:28 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 1113
+2025-12-30 18:04:20 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:04:20 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:05:16 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:05:17 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:06:27 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:06:28 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:08:49 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 18:08:51 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 18:08:58 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 18:08:59 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 18:08:59 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 18:08:59 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:09:16 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 712])
+2025-12-30 18:09:16 - audiobook.tts.engines.maya - INFO - Generated 652 new tokens
+2025-12-30 18:09:16 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [128983, 135924, 137197, 142900, 144961, 151725, 156338, 130160, 133537, 137232, 143759, 146195, 152124, 154733, 131530, 132682, 138305, 141585, 144979, 149830]
+2025-12-30 18:09:16 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 651
+2025-12-30 18:09:29 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:09:46 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 766])
+2025-12-30 18:09:46 - audiobook.tts.engines.maya - INFO - Generated 708 new tokens
+2025-12-30 18:09:46 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [128983, 133627, 139283, 144342, 146335, 150628, 153725, 130380, 136443, 138660, 142924, 148731, 151232, 155014, 132185, 133025, 137341, 144295, 145964, 148756]
+2025-12-30 18:09:46 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 707
+2025-12-30 18:09:59 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:10:15 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 702])
+2025-12-30 18:10:15 - audiobook.tts.engines.maya - INFO - Generated 645 new tokens
+2025-12-30 18:10:15 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [128983, 135924, 139283, 143848, 146335, 149629, 156672, 132185, 136443, 140199, 140564, 148731, 152487, 156583, 130380, 134893, 138944, 142676, 148731, 151194]
+2025-12-30 18:10:15 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 644
+2025-12-30 18:11:51 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:11:57 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 286])
+2025-12-30 18:11:57 - audiobook.tts.engines.maya - INFO - Generated 246 new tokens
+2025-12-30 18:11:57 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [131280, 132433, 137197, 143739, 147370, 149256, 155085, 129223, 134278, 139813, 140871, 146473, 149480, 153937, 129194, 133105, 139587, 143691, 145393, 149258]
+2025-12-30 18:11:57 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 245
+2025-12-30 18:12:26 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:12:46 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 720])
+2025-12-30 18:12:46 - audiobook.tts.engines.maya - INFO - Generated 673 new tokens
+2025-12-30 18:12:46 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [130273, 132788, 137418, 140855, 147369, 150595, 152871, 131269, 133089, 138307, 142403, 148236, 149439, 156897, 128671, 135385, 139983, 141031, 147673, 149223]
+2025-12-30 18:12:46 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 672
+2025-12-30 18:13:10 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:13:11 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:19:07 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:19:08 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:22:54 - web_app - WARNING - Failed to unload Maya: 'TTSService' object has no attribute 'engines'
+2025-12-30 18:22:54 - audiobook.models.voice_analyzer - INFO - Model voice-analyzer-qwen not found locally. Initiating download...
+2025-12-30 18:22:54 - audiobook.models.manager - INFO - Downloading voice-analyzer-qwen from Qwen/Qwen2-Audio-7B-Instruct...
+2025-12-30 18:24:53 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:24:54 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:25:35 - audiobook.models.voice_analyzer - INFO - Model voice-analyzer-qwen not found locally. Initiating download...
+2025-12-30 18:25:35 - audiobook.models.manager - INFO - Downloading voice-analyzer-qwen from Qwen/Qwen2-Audio-7B-Instruct...
+2025-12-30 18:30:04 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:30:05 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:30:14 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 18:30:14 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 18:30:20 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 18:30:21 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 18:30:21 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 18:30:21 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:30:34 - audiobook.tts.engines.maya - INFO - 🗑️ Unloading Maya1 model from GPU...
+2025-12-30 18:30:34 - web_app - WARNING - Failed to unload Maya: 'MayaEngine' object has no attribute '_processor'
+2025-12-30 18:30:34 - audiobook.models.voice_analyzer - INFO - Model voice-analyzer-qwen not found locally. Initiating download...
+2025-12-30 18:30:34 - audiobook.models.manager - INFO - Downloading voice-analyzer-qwen from Qwen/Qwen2-Audio-7B-Instruct...
+2025-12-30 18:30:44 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 980])
+2025-12-30 18:30:44 - audiobook.tts.engines.maya - INFO - Generated 904 new tokens
+2025-12-30 18:30:44 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [132151, 133627, 138281, 142900, 145313, 152177, 153003, 128983, 133676, 136887, 142377, 145964, 152576, 153725, 128845, 133963, 139624, 141525, 146763, 150061]
+2025-12-30 18:30:44 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 903
+2025-12-30 18:31:01 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:31:04 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:31:04 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:31:04 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:31:08 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:31:09 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:31:09 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:31:19 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:32:06 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:32:07 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:32:20 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 18:32:20 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 18:32:26 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 18:32:27 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 18:32:28 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 18:32:28 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:32:32 - audiobook.tts.engines.maya - INFO - 🗑️ Unloading Maya1 model from GPU...
+2025-12-30 18:32:32 - audiobook.tts.engines.maya - INFO - ✅ Maya1 unloaded.
+2025-12-30 18:32:32 - audiobook.models.voice_analyzer - INFO - Model voice-analyzer-qwen not found locally. Initiating download...
+2025-12-30 18:32:32 - audiobook.models.manager - INFO - Downloading voice-analyzer-qwen from Qwen/Qwen2-Audio-7B-Instruct...
+2025-12-30 18:32:50 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 876])
+2025-12-30 18:32:50 - audiobook.tts.engines.maya - INFO - Generated 813 new tokens
+2025-12-30 18:32:50 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [129677, 133380, 137637, 144010, 146859, 148776, 155262, 128983, 134893, 139193, 142676, 148731, 149881, 156583, 132185, 136443, 140199, 141437, 145313, 152487]
+2025-12-30 18:32:50 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 812
+2025-12-30 18:33:55 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 18:33:55 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 18:33:58 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 18:33:58 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 18:34:04 - audiobook.models.voice_analyzer - INFO - Model voice-analyzer-qwen not found locally. Initiating download...
+2025-12-30 18:34:04 - audiobook.models.manager - INFO - Downloading voice-analyzer-qwen from Qwen/Qwen2-Audio-7B-Instruct...
+2025-12-30 18:34:04 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 18:34:05 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 18:34:05 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 18:34:05 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 18:34:21 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 673])
+2025-12-30 18:34:21 - audiobook.tts.engines.maya - INFO - Generated 610 new tokens
+2025-12-30 18:34:21 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [132199, 133627, 137098, 143429, 145084, 151208, 153146, 128426, 134674, 136721, 142392, 148399, 151893, 154714, 131516, 134187, 136686, 143787, 146129, 152273]
+2025-12-30 18:34:21 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 609
+2025-12-30 18:50:00 - audiobook.models.manager - INFO - Successfully downloaded voice-analyzer-qwen to /app/models/voice-analyzer/voice-analyzer-qwen
+2025-12-30 18:50:00 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from /app/models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 18:50:01 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 18:50:01 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 18:50:09 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 18:50:09 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully
+2025-12-30 19:20:51 - audiobook.tts.engines.maya - INFO - 🗑️ Unloading Maya1 model from GPU...
+2025-12-30 19:20:51 - audiobook.tts.engines.maya - INFO - ✅ Maya1 unloaded.
+2025-12-30 19:21:06 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 19:21:06 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 19:21:13 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 19:21:15 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 19:21:15 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 19:21:16 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 19:21:16 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 19:26:42 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 1065])
+2025-12-30 19:26:42 - audiobook.tts.engines.maya - INFO - Generated 995 new tokens
+2025-12-30 19:26:42 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [129403, 135367, 140046, 142625, 145868, 151931, 156644, 130216, 136218, 138319, 143942, 146033, 152509, 156230, 130255, 133818, 140109, 140715, 148182, 150791]
+2025-12-30 19:26:42 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 994
+2025-12-30 19:42:18 - audiobook.tts.engines.maya - INFO - 🗑️ Unloading Maya1 model from GPU...
+2025-12-30 19:42:18 - audiobook.tts.engines.maya - INFO - ✅ Maya1 unloaded.
+2025-12-30 19:42:24 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 19:42:24 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 19:42:31 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 19:42:31 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 19:42:31 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 19:42:32 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 19:42:32 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 19:46:51 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 822])
+2025-12-30 19:46:51 - audiobook.tts.engines.maya - INFO - Generated 750 new tokens
+2025-12-30 19:46:51 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [128983, 133627, 137418, 141597, 148731, 151124, 156583, 130380, 136443, 138944, 141689, 148731, 151232, 155328, 132185, 133025, 137341, 144295, 145964, 150601]
+2025-12-30 19:46:51 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 749
+2025-12-30 20:02:48 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 20:06:44 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 752])
+2025-12-30 20:06:44 - audiobook.tts.engines.maya - INFO - Generated 680 new tokens
+2025-12-30 20:06:44 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [132151, 134893, 137637, 144531, 147181, 149925, 153725, 128983, 136443, 137952, 143040, 148731, 149175, 153977, 130380, 134047, 136619, 141437, 146054, 152376]
+2025-12-30 20:06:44 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 679
+2025-12-30 20:35:06 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 20:39:40 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 862])
+2025-12-30 20:39:40 - audiobook.tts.engines.maya - INFO - Generated 792 new tokens
+2025-12-30 20:39:40 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [132151, 135924, 149957, 144384, 147568, 150569, 153271, 130380, 134472, 140199, 141437, 148731, 151232, 155328, 128983, 136443, 136887, 140983, 148200, 149629]
+2025-12-30 20:39:40 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 791
+2025-12-30 21:56:24 - audiobook.tts.engines.maya - INFO - 🗑️ Unloading Maya1 model from GPU...
+2025-12-30 21:56:24 - audiobook.tts.engines.maya - INFO - ✅ Maya1 unloaded.
+2025-12-30 21:58:27 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 21:58:27 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:00:56 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 22:00:57 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 22:00:57 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 22:01:03 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 22:01:03 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully
+2025-12-30 22:01:05 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 22:01:08 - audiobook.models.voice_analyzer - INFO - Analysis result: 
+2025-12-30 22:02:32 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 22:02:35 - audiobook.models.voice_analyzer - INFO - Analysis result: 
+2025-12-30 22:03:55 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:03:56 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:04:41 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 22:04:42 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 22:04:42 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 22:04:47 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 22:04:47 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully
+2025-12-30 22:04:49 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 22:04:49 - audiobook.models.voice_analyzer - INFO - Input shape: torch.Size([1, 812])
+2025-12-30 22:04:51 - audiobook.models.voice_analyzer - INFO - Output shape: torch.Size([1, 813])
+2025-12-30 22:04:51 - audiobook.models.voice_analyzer - INFO - Full response (for debug): Describe this voice in detail for a text-to-speech system. Focus on: Gender, Estimated Age, Accent, Pitch (Low/Normal/High), Timbre (e.g. Warm, Bright, Gravelly), Pacing (Slow/Conversational/Fast), and emotional Tone.
+2025-12-30 22:04:51 - audiobook.models.voice_analyzer - INFO - Analysis result: 
+2025-12-30 22:05:28 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:05:29 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:06:19 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 22:06:19 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 22:06:26 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 22:06:27 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 22:06:27 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 22:06:27 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 22:06:46 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 819])
+2025-12-30 22:06:46 - audiobook.tts.engines.maya - INFO - Generated 743 new tokens
+2025-12-30 22:06:46 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [132151, 134971, 138281, 141507, 147568, 150232, 153271, 128983, 136443, 138944, 143040, 146465, 152487, 156583, 132185, 133025, 137593, 144295, 148731, 152271]
+2025-12-30 22:06:46 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 742
+2025-12-30 22:07:09 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 22:07:24 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 680])
+2025-12-30 22:07:24 - audiobook.tts.engines.maya - INFO - Generated 610 new tokens
+2025-12-30 22:07:24 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [128983, 133627, 137418, 143429, 148731, 150569, 156367, 128364, 134871, 137713, 144519, 148236, 149248, 156306, 130109, 135379, 138313, 144323, 147610, 151099]
+2025-12-30 22:07:24 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 609
+2025-12-30 22:07:49 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:07:50 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:08:06 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 22:08:07 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 22:08:07 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 22:08:12 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 22:08:12 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully
+2025-12-30 22:08:13 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 22:08:13 - audiobook.models.voice_analyzer - INFO - Input shape: torch.Size([1, 842])
+2025-12-30 22:10:05 - audiobook.models.voice_analyzer - INFO - Output shape: torch.Size([1, 910])
+2025-12-30 22:10:05 - audiobook.models.voice_analyzer - INFO - Analysis result: The voice is that of an English male estimated to be around 40 years old with a neutral mood. The accent is British, and the pitch is normal. The timbre of the voice can be described as gravelly. The 
+2025-12-30 22:10:18 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 22:10:18 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 22:10:24 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 22:10:25 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 22:10:25 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 22:10:25 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 22:10:25 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 22:18:09 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 898])
+2025-12-30 22:18:09 - audiobook.tts.engines.maya - INFO - Generated 792 new tokens
+2025-12-30 22:18:09 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [132151, 134893, 137637, 143985, 147181, 149175, 155262, 128983, 136443, 138194, 144079, 145226, 149881, 156583, 128868, 135280, 136887, 142377, 145042, 149629]
+2025-12-30 22:18:09 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 791
+2025-12-30 22:39:05 - audiobook.tts.engines.maya - INFO - Starting generation inference...
+2025-12-30 22:46:38 - audiobook.tts.engines.maya - INFO - Generation output shape: torch.Size([1, 843])
+2025-12-30 22:46:38 - audiobook.tts.engines.maya - INFO - Generated 771 new tokens
+2025-12-30 22:46:38 - audiobook.tts.engines.maya - INFO - First 20 generated tokens: [128983, 135924, 137637, 142900, 146722, 150557, 154653, 130380, 136003, 139661, 143829, 146254, 151949, 155212, 128364, 134191, 139453, 142924, 144681, 151996]
+2025-12-30 22:46:38 - audiobook.tts.engines.maya - INFO - Filtered SNAC tokens: 770
+2025-12-30 22:55:53 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:55:54 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:56:04 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:56:04 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:56:14 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:56:15 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:56:25 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:56:25 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:56:35 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:56:36 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:56:46 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:56:46 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:56:56 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:56:57 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:57:07 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:57:07 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:57:17 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:57:18 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:57:28 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:57:28 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:57:38 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:57:39 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:57:49 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:57:49 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:57:59 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:58:00 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:58:10 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:58:10 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:58:20 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:58:21 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:58:31 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:58:31 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:58:41 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:58:42 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:58:51 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:58:52 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:59:02 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:59:03 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:59:13 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:59:13 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:59:23 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:59:24 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:59:34 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:59:34 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:59:44 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:59:45 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 22:59:55 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 22:59:55 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 23:00:05 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 23:00:06 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 23:00:16 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 23:00:17 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 23:01:26 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 23:01:27 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 23:02:05 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 23:02:07 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:02:07 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 23:02:18 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 23:02:18 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully
+2025-12-30 23:02:29 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 23:02:29 - audiobook.models.voice_analyzer - INFO - Input shape: torch.Size([1, 740])
+2025-12-30 23:02:35 - faster_whisper - INFO - Processing audio with duration 00:25.911
+2025-12-30 23:02:35 - faster_whisper - INFO - Detected language 'en' with probability 0.99
+2025-12-30 23:03:26 - audiobook.models.voice_analyzer - INFO - 🗑️ Unloading Voice Analyzer...
+2025-12-30 23:03:26 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer unloaded
+2025-12-30 23:03:38 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 23:03:38 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:03:38 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 23:03:38 - accelerate.utils.modeling - INFO - Based on the current allocation process, no modules could be assigned to the following devices due to insufficient memory:
+  - 0: 2558399488 bytes required
+These minimum requirements are specific to this allocation attempt and may vary. Consider increasing the available memory for these devices to at least the specified minimum, or adjusting the model config.
+2025-12-30 23:03:44 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully
+2025-12-30 23:03:44 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 23:03:44 - audiobook.models.voice_analyzer - INFO - Input shape: torch.Size([1, 740])
+2025-12-30 23:03:44 - audiobook.models.voice_analyzer - INFO - 🗑️ Unloading Voice Analyzer...
+2025-12-30 23:03:45 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer unloaded
+2025-12-30 23:04:41 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 23:04:42 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:04:42 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 23:04:51 - accelerate.big_modeling - WARNING - Some parameters are on the meta device because they were offloaded to the cpu.
+2025-12-30 23:04:51 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully
+2025-12-30 23:04:51 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 23:04:51 - audiobook.models.voice_analyzer - INFO - Input shape: torch.Size([1, 740])
+2025-12-30 23:06:11 - audiobook.models.voice_analyzer - INFO - Output shape: torch.Size([1, 789])
+2025-12-30 23:06:11 - audiobook.models.voice_analyzer - INFO - Analysis result: The speaker is male, likely in his fifties, with an English accent. The pitch is normal, the timbre is gravelly, and the pacing is slow. There's no particular emotional tone indicated from the speech 
+2025-12-30 23:06:11 - audiobook.models.voice_analyzer - INFO - 🗑️ Unloading Voice Analyzer...
+2025-12-30 23:06:12 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer unloaded
+2025-12-30 23:06:16 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 23:06:16 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 23:06:22 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:06:25 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 23:06:26 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 23:06:26 - audiobook.tts.engines.maya - INFO - 🗑️ Unloading Maya1 model from GPU...
+2025-12-30 23:06:26 - audiobook.tts.engines.maya - INFO - ✅ Maya1 unloaded.
+2025-12-30 23:06:39 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 23:06:39 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 23:07:40 - faster_whisper - INFO - Processing audio with duration 00:18.961
+2025-12-30 23:07:41 - faster_whisper - INFO - Detected language 'en' with probability 1.00
+2025-12-30 23:07:41 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 23:07:42 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:07:42 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 23:07:44 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully (bfloat16)
+2025-12-30 23:07:46 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 23:07:46 - audiobook.models.voice_analyzer - INFO - Input shape: torch.Size([1, 566])
+2025-12-30 23:07:48 - audiobook.models.voice_analyzer - INFO - Output shape: torch.Size([1, 619])
+2025-12-30 23:07:48 - audiobook.models.voice_analyzer - INFO - Analysis result: {'gender': 'male', 'age_range': 'twenties', 'accent': 'english', 'pitch': 'normal', 'timbre': 'gravelly', 'tempo': 'conversational', 'mood': 'unspecified'}
+2025-12-30 23:07:48 - audiobook.models.voice_analyzer - INFO - 🗑️ Unloading Voice Analyzer...
+2025-12-30 23:07:48 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer unloaded
+2025-12-30 23:07:50 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 23:07:51 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:07:51 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 23:07:53 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully (bfloat16)
+2025-12-30 23:07:53 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 23:07:53 - audiobook.models.voice_analyzer - INFO - Input shape: torch.Size([1, 566])
+2025-12-30 23:07:55 - audiobook.models.voice_analyzer - INFO - Output shape: torch.Size([1, 619])
+2025-12-30 23:07:55 - audiobook.models.voice_analyzer - INFO - Analysis result: {'gender': 'male', 'age_range': 'twenties', 'accent': 'English', 'pitch': 'normal', 'timbre': 'gravelly', 'tempo': 'conversational', 'mood': 'unspecified'}
+2025-12-30 23:07:55 - audiobook.models.voice_analyzer - INFO - 🗑️ Unloading Voice Analyzer...
+2025-12-30 23:07:55 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer unloaded
+2025-12-30 23:07:57 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 23:07:57 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 23:08:03 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:08:04 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 23:08:05 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 23:08:05 - audiobook.tts.engines.maya - INFO - 🗑️ Unloading Maya1 model from GPU...
+2025-12-30 23:08:05 - audiobook.tts.engines.maya - INFO - ✅ Maya1 unloaded.
+2025-12-30 23:09:47 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 23:09:48 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2025-12-30 23:09:51 - audiobook.models.voice_analyzer - INFO - 🔄 Loading Voice Analyzer from models/voice-analyzer/voice-analyzer-qwen...
+2025-12-30 23:09:52 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:09:52 - accelerate.utils.modeling - WARNING - The model weights are not tied. Please use the `tie_weights` method before using the `infer_auto_device` function.
+2025-12-30 23:09:54 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer loaded successfully (bfloat16)
+2025-12-30 23:09:55 - audiobook.models.voice_analyzer - INFO - Analyzing voice features...
+2025-12-30 23:09:55 - audiobook.models.voice_analyzer - INFO - Input shape: torch.Size([1, 566])
+2025-12-30 23:09:56 - faster_whisper - INFO - Processing audio with duration 00:18.961
+2025-12-30 23:09:56 - faster_whisper - INFO - Detected language 'en' with probability 1.00
+2025-12-30 23:09:58 - audiobook.models.voice_analyzer - INFO - Output shape: torch.Size([1, 617])
+2025-12-30 23:09:58 - audiobook.models.voice_analyzer - INFO - Analysis result: {'gender': 'male', 'age_range': 'twenties', 'accent': 'English', 'pitch': 'normal', 'timbre': 'gravelly', 'tempo': 'normal', 'mood': 'unspecified'}
+2025-12-30 23:09:58 - audiobook.models.voice_analyzer - INFO - 🗑️ Unloading Voice Analyzer...
+2025-12-30 23:09:58 - audiobook.models.voice_analyzer - INFO - ✅ Voice Analyzer unloaded
+2025-12-30 23:10:00 - audiobook.tts.engines.maya - INFO - 🔄 Loading Maya1 (3B)...
+2025-12-30 23:10:00 - audiobook.tts.engines.maya - INFO - 📂 Using local model from: models/tts/maya-1
+2025-12-30 23:10:06 - accelerate.utils.modeling - INFO - We will use 90% of the memory on device 0 for storing the model, and 10% for the buffer to avoid OOM. You can set `max_memory` in to a higher value to use more memory (at your own risk).
+2025-12-30 23:10:07 - audiobook.tts.engines.maya - INFO - 🎵 Loading SNAC decoder...
+2025-12-30 23:10:07 - audiobook.tts.engines.maya - INFO - ✅ Maya1 (3B) initialized successfully
+2025-12-30 23:10:08 - audiobook.tts.engines.maya - INFO - SNAC encode returned 3 tensors
+2025-12-30 23:10:08 - audiobook.tts.engines.maya - INFO -   codes[0] shape: torch.Size([1, 223])
+2025-12-30 23:10:08 - audiobook.tts.engines.maya - INFO -   codes[1] shape: torch.Size([1, 446])
+2025-12-30 23:10:08 - audiobook.tts.engines.maya - INFO -   codes[2] shape: torch.Size([1, 892])
+2025-12-30 23:10:08 - audiobook.tts.engines.maya - INFO - 🎵 Encoded 18.96s audio to 1561 SNAC tokens
+2025-12-30 23:10:24 - audiobook.tts.engines.maya - INFO - 🎤 Generated 612 SNAC tokens with cloned voice
+2025-12-30 23:10:24 - audiobook.tts.engines.maya - INFO - 🗑️ Unloading Maya1 model from GPU...
+2025-12-30 23:10:24 - audiobook.tts.engines.maya - INFO - ✅ Maya1 unloaded.
+2025-12-30 23:12:13 - root - INFO - Logging configured. Writing to /app/logs/app.log
+2025-12-30 23:12:14 - httpx - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"

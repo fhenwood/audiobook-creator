@@ -1,0 +1,6 @@
+2025-12-30 02:04:57 - root - INFO - Logging configured. Writing to /home/frederic/Projects/ab/audiobook-creator/tests/test_logs/app.log
+2025-12-30 02:04:57 - test_logger - INFO - Test log message
+2025-12-30 02:04:57 - audiobook.tts.generator.text_loader - INFO - Loading text from converted_book: /tmp/pytest-of-frederic/pytest-8/test_load_from_converted_book0/converted_book.txt
+2025-12-30 02:04:57 - audiobook.tts.generator.text_loader - INFO - Loaded 3 lines
+2025-12-30 02:04:57 - audiobook.tts.pipeline - ERROR - Pipeline failed: No text file found for job int_test_job
+2025-12-30 02:04:57 - audiobook.worker - INFO - 🛑 JobWorker stopping...

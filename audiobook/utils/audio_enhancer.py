@@ -212,7 +212,8 @@ class AudioPreprocessingPipeline:
                     output_path
                 ], capture_output=True, timeout=30)
                 return output_path, "Converted to 48k WAV"
-            except:
+            except Exception as e:
+                print(f"⚠️ Failed to convert audio: {e}")
                 shutil.copy(input_path, output_path)
                 return output_path, "Saved as is"
 

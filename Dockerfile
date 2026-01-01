@@ -1,5 +1,5 @@
 # Universal Dockerfile for Audiobook Creator
-# Supports Orpheus (CPU/GPU), Chatterbox (CPU/GPU), and VibeVoice (GPU only)
+# Supports Orpheus (CPU/GPU), VibeVoice (GPU only), and Maya (GPU only)
 # Base image provides CUDA toolkit for building flash-attention
 
 FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
@@ -67,7 +67,9 @@ RUN pip3 install --no-cache-dir flash-attn --no-build-isolation
 
 # Copy requirements files
 COPY requirements.txt .
-COPY containers/orpheus/requirements.txt orpheus_tts_requirements.txt
+
+# Install build dependencies for llama-cpp-python
+RUN uv pip install --system --no-cache-dir scikit-build-core
 
 # Install other Python dependencies
 # Use --system to install into system python
@@ -75,9 +77,6 @@ RUN uv pip install --system --no-cache-dir --no-build-isolation -r requirements.
 
 # Install Orpheus dependencies
 RUN pip3 install --no-cache-dir snac==1.2.1 sounddevice==0.4.6 psutil==5.9.0
-
-# Install Chatterbox-TTS without dependencies to avoid conflict with VibeVoice's transformers version
-RUN pip3 install --no-deps chatterbox-tts
 
 # Install VibeVoice from community repo (Last to ensure dependencies are met)
 RUN pip3 install --no-cache-dir git+https://github.com/vibevoice-community/VibeVoice.git

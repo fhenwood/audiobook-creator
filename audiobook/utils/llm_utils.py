@@ -17,16 +17,16 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import traceback
 import os
-from dotenv import load_dotenv
+
 import random
 import asyncio
 from openai import AsyncOpenAI
 import traceback
 import re
 
-load_dotenv()
+from audiobook.config import settings
 
-NO_THINK_MODE = os.environ.get("NO_THINK_MODE", "true")
+NO_THINK_MODE = settings.no_think_mode
 
 # Retry configuration
 MAX_RETRIES = 3

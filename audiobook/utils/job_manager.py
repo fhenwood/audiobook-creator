@@ -8,12 +8,17 @@ import json
 import time
 import uuid
 import shutil
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, asdict
 from enum import Enum
 import threading
+from audiobook.utils.database import db
+from audiobook.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class JobStatus(str, Enum):
@@ -22,6 +27,17 @@ class JobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     STALLED = "stalled"  # Job stopped unexpectedly but can be resumed
+
+@dataclass
+class JobProgress:
+    """Structured progress update for a job."""
+    message: str
+    percent_complete: float = 0.0
+    stage: str = "processing" 
+    details: Optional[Dict[str, Any]] = None
+    
+    def __str__(self):
+        return f"[{self.percent_complete:.1f}%] {self.message}"
 
 
 @dataclass
@@ -72,6 +88,7 @@ class Job:
     checkpoint: Optional[Dict[str, Any]] = None
     last_activity: Optional[str] = None  # ISO timestamp of last activity
     retry_count: int = 0  # Number of auto-resume attempts for stalled jobs
+    percent_complete: float = 0.0  # Percentage complete (0-100)
     # New VibeVoice / Post-processing fields
     postprocess: bool = False
     vibevoice_voice: Optional[str] = None
@@ -79,6 +96,7 @@ class Job:
     vibevoice_top_p: float = 0.95
     use_vibevoice_dialogue: bool = False
     vibevoice_dialogue_voice: Optional[str] = None
+    verification_enabled: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -92,6 +110,10 @@ class Job:
             data['last_activity'] = data.get('updated_at')
         if 'retry_count' not in data:
             data['retry_count'] = 0
+        if 'percent_complete' not in data:
+            data['percent_complete'] = 0.0
+        if 'verification_enabled' not in data:
+            data['verification_enabled'] = False
         return cls(**data)
     
     def get_checkpoint(self) -> Optional[JobCheckpoint]:
@@ -135,33 +157,52 @@ class JobManager:
         if self._initialized:
             return
         self._initialized = True
-        self._jobs: Dict[str, Job] = {}
-        self._load_jobs()
+        # self._jobs removed in favor of DB
+        self._migrate_json_to_db()
         self._cleanup_expired_jobs()
     
-    def _load_jobs(self):
-        """Load jobs from persistent storage."""
-        try:
-            if os.path.exists(self.JOBS_FILE):
+    def _migrate_json_to_db(self):
+        """Migrate legacy jobs.json to SQLite."""
+        if os.path.exists(self.JOBS_FILE):
+            logger.info("🔄 Migrating jobs.json to SQLite database...")
+            try:
                 with open(self.JOBS_FILE, 'r') as f:
                     data = json.load(f)
-                    self._jobs = {
-                        job_id: Job.from_dict(job_data) 
-                        for job_id, job_data in data.items()
-                    }
-        except Exception as e:
-            print(f"Error loading jobs: {e}")
-            self._jobs = {}
+                    
+                count = 0
+                with db.get_cursor() as cursor:
+                    for job_id, job_data in data.items():
+                        # Check if exists
+                        cursor.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,))
+                        if cursor.fetchone():
+                            continue
+                            
+                        job = Job.from_dict(job_data)
+                        cursor.execute(
+                            "INSERT INTO jobs (id, created_at, updated_at, expires_at, status, book_title, percent_complete, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                job.job_id,
+                                job.created_at,
+                                job.updated_at,
+                                job.expires_at,
+                                job.status,
+                                job.book_title,
+                                job.percent_complete,
+                                json.dumps(job.to_dict())
+                            )
+                        )
+                        count += 1
+                
+                logger.info(f"✅ Migrated {count} jobs to database.")
+                os.rename(self.JOBS_FILE, self.JOBS_FILE + ".bak")
+                logger.info(f"Renamed {self.JOBS_FILE} to {self.JOBS_FILE}.bak")
+                
+            except Exception as e:
+                logger.error(f"❌ Error migrating jobs: {e}")
     
     def _save_jobs(self):
-        """Save jobs to persistent storage."""
-        try:
-            os.makedirs(os.path.dirname(self.JOBS_FILE), exist_ok=True)
-            with open(self.JOBS_FILE, 'w') as f:
-                data = {job_id: job.to_dict() for job_id, job in self._jobs.items()}
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            print(f"Error saving jobs: {e}")
+        """No-op for backward compatibility if called internally."""
+        pass
     
     def get_job_dir(self, job_id: str) -> str:
         """Get the working directory for a job."""
@@ -179,6 +220,18 @@ class JobManager:
         """Get the path to the emotion tags file for a job."""
         return os.path.join(self.get_job_dir(job_id), "tag_added_lines_chunks.txt")
     
+    def get_job_cover_path(self, job_id: str) -> str:
+        """Get the path to the cover image for a job."""
+        return os.path.join(self.get_job_dir(job_id), "cover.jpg")
+    
+    def get_job_chapters_file_path(self, job_id: str) -> str:
+        """Get the path to the chapters metadata file for a job."""
+        return os.path.join(self.get_job_dir(job_id), "chapters.txt")
+    
+    def get_job_chapter_list_path(self, job_id: str) -> str:
+        """Get the path to the chapter list file for a job."""
+        return os.path.join(self.get_job_dir(job_id), "chapter_list.txt")
+    
     def create_job_directory(self, job_id: str):
         """Create the working directory structure for a job."""
         job_dir = self.get_job_dir(job_id)
@@ -188,32 +241,42 @@ class JobManager:
         return job_dir
     
     def _cleanup_expired_jobs(self):
-        """Remove jobs that have expired (older than 1 week)."""
-        now = datetime.now()
-        expired_jobs = []
-        
-        for job_id, job in self._jobs.items():
-            try:
-                expires_at = datetime.fromisoformat(job.expires_at)
-                if now > expires_at:
-                    expired_jobs.append(job_id)
-            except Exception:
-                expired_jobs.append(job_id)
-        
-        for job_id in expired_jobs:
-            self._remove_job_files(job_id)
-            del self._jobs[job_id]
-        
-        if expired_jobs:
-            self._save_jobs()
-            print(f"Cleaned up {len(expired_jobs)} expired jobs")
+        """Remove jobs that have expired."""
+        now = datetime.now().isoformat()
+        try:
+            with db.get_cursor() as cursor:
+                cursor.execute("SELECT id, data FROM jobs WHERE expires_at < ?", (now,))
+                expired_rows = cursor.fetchall()
+                
+                for row in expired_rows:
+                    self._remove_job_files(row['id'], json.loads(row['data']))
+                
+                if expired_rows:
+                    cursor.execute("DELETE FROM jobs WHERE expires_at < ?", (now,))
+                    logger.info(f"Cleaned up {len(expired_rows)} expired jobs")
+        except Exception as e:
+            logger.error(f"Error cleaning up expired jobs: {e}")
     
-    def _remove_job_files(self, job_id: str):
-        """Remove all files associated with a job, including working directory."""
-        job = self._jobs.get(job_id)
+    def _remove_job_files(self, job_id: str, job_data: Dict = None):
+        """Remove all files associated with a job."""
+        if job_data is None:
+            # Fetch if not provided
+            try:
+                with db.get_cursor() as cursor:
+                    cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        job_data = json.loads(row['data'])
+            except Exception:
+                pass
+        
+        if not job_data:
+            return
+
+        job = Job.from_dict(job_data)
         
         # Remove output file (final audiobook)
-        if job and job.output_file and os.path.exists(job.output_file):
+        if job.output_file and os.path.exists(job.output_file):
             try:
                 os.remove(job.output_file)
                 print(f"Removed output file: {job.output_file}")
@@ -221,7 +284,7 @@ class JobManager:
                 print(f"Error removing job file {job.output_file}: {e}")
         
         # Remove persistent book copy
-        if job and job.checkpoint:
+        if job.checkpoint:
             book_path = job.checkpoint.get('book_file_path', '')
             if book_path and '_temp_' in book_path and os.path.exists(book_path):
                 try:
@@ -250,7 +313,8 @@ class JobManager:
         vibevoice_temperature: float = 0.7,
         vibevoice_top_p: float = 0.95,
         use_vibevoice_dialogue: bool = False,
-        vibevoice_dialogue_voice: str = None
+        vibevoice_dialogue_voice: str = None,
+        verification_enabled: bool = False
     ) -> Job:
         """Create a new job, its working directory, and return the job."""
         job_id = str(uuid.uuid4())[:8]  # Short UUID for easier reference
@@ -276,36 +340,119 @@ class JobManager:
             vibevoice_temperature=vibevoice_temperature,
             vibevoice_top_p=vibevoice_top_p,
             use_vibevoice_dialogue=use_vibevoice_dialogue,
-            vibevoice_dialogue_voice=vibevoice_dialogue_voice
+            vibevoice_dialogue_voice=vibevoice_dialogue_voice,
+            verification_enabled=verification_enabled
         )
         
-        self._jobs[job_id] = job
-        self._save_jobs()
+        with db.get_cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO jobs (id, created_at, updated_at, expires_at, status, book_title, percent_complete, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job.job_id,
+                    job.created_at,
+                    job.updated_at,
+                    job.expires_at,
+                    job.status,
+                    job.book_title,
+                    job.percent_complete,
+                    json.dumps(job.to_dict())
+                )
+            )
         return job
     
-    def update_job_progress(self, job_id: str, progress: str):
-        """Update job progress message."""
-        if job_id in self._jobs:
-            now = datetime.now().isoformat()
-            self._jobs[job_id].progress = progress
-            self._jobs[job_id].updated_at = now
-            self._jobs[job_id].last_activity = now
-            self._jobs[job_id].status = JobStatus.IN_PROGRESS.value
-            self._save_jobs()
+    def update_job_progress(self, job_id: str, progress: str, percent_complete: float = None):
+        """Update job progress message and optionally percentage."""
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                
+                now = datetime.now().isoformat()
+                job.progress = progress
+                if percent_complete is not None:
+                    job.percent_complete = percent_complete
+                job.updated_at = now
+                job.last_activity = now
+                job.status = JobStatus.IN_PROGRESS.value
+                
+                cursor.execute(
+                    """
+                    UPDATE jobs 
+                    SET progress = ?, percent_complete = ?, updated_at = ?, status = ?, data = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        job.progress, 
+                        job.percent_complete, 
+                        job.updated_at, 
+                        job.status, 
+                        json.dumps(job.to_dict()), 
+                        job_id
+                    )
+                )
     
     def update_job_checkpoint(self, job_id: str, checkpoint: JobCheckpoint):
         """Update job checkpoint for resume capability."""
-        if job_id in self._jobs:
-            now = datetime.now().isoformat()
-            self._jobs[job_id].checkpoint = checkpoint.to_dict()
-            self._jobs[job_id].last_activity = now
-            self._jobs[job_id].updated_at = now
-            self._save_jobs()
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                
+                now = datetime.now().isoformat()
+                job.checkpoint = checkpoint.to_dict()
+                job.last_activity = now
+                job.updated_at = now
+                
+                cursor.execute(
+                    "UPDATE jobs SET updated_at = ?, data = ? WHERE id = ?",
+                    (job.updated_at, json.dumps(job.to_dict()), job_id)
+                )
+    
+    def mark_line_complete(self, job_id: str, line_index: int):
+        """Mark a specific line as completed in the DB.
+        
+        This is the source of truth for resume logic - not filesystem checks.
+        """
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT completed_lines FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                completed = json.loads(row['completed_lines'] or '[]')
+                if line_index not in completed:
+                    completed.append(line_index)
+                    cursor.execute(
+                        "UPDATE jobs SET completed_lines = ? WHERE id = ?",
+                        (json.dumps(completed), job_id)
+                    )
+    
+    def get_completed_lines(self, job_id: str) -> set:
+        """Get set of completed line indices from DB.
+        
+        Returns:
+            Set of line indices that have been successfully processed.
+        """
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT completed_lines FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row and row['completed_lines']:
+                return set(json.loads(row['completed_lines']))
+        return set()
     
     def mark_job_stalled(self, job_id: str):
         """Mark a job as stalled (can be resumed)."""
-        if job_id in self._jobs:
-            job = self._jobs[job_id]
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data, status FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+                
+            job_data = json.loads(row['data'])
+            job = Job.from_dict(job_data)
+            
             if job.status == JobStatus.IN_PROGRESS.value and job.checkpoint:
                 checkpoint = job.get_checkpoint()
                 lines_done = checkpoint.lines_completed if checkpoint else 0
@@ -315,26 +462,66 @@ class JobManager:
                 job.status = JobStatus.STALLED.value
                 job.progress = f"⏸️ Stalled at {pct:.1f}% ({lines_done}/{total_lines} lines) - Click Resume to continue"
                 job.updated_at = datetime.now().isoformat()
-                self._save_jobs()
+                
+                cursor.execute(
+                    "UPDATE jobs SET status = ?, progress = ?, updated_at = ?, data = ? WHERE id = ?",
+                    (job.status, job.progress, job.updated_at, json.dumps(job.to_dict()), job_id)
+                )
                 return True
         return False
+    
+    def get_pending_jobs(self, limit: int = 10) -> List[Job]:
+        """
+        Get pending jobs ordered by creation time.
+        
+        Args:
+            limit: Maximum number of jobs to return.
+            
+        Returns:
+            List of pending Job objects.
+        """
+        jobs = []
+        with db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT data FROM jobs 
+                WHERE status = ? 
+                ORDER BY created_at ASC 
+                LIMIT ?
+                """,
+                (JobStatus.PENDING.value, limit)
+            )
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                job_data = json.loads(row['data'])
+                jobs.append(Job.from_dict(job_data))
+        
+        return jobs
     
     def check_for_stalled_jobs(self, stall_timeout_seconds: int = 300):
         """Check for jobs that have stalled (no activity for timeout period)."""
         now = datetime.now()
         stalled_jobs = []
         
-        for job_id, job in self._jobs.items():
-            if job.status == JobStatus.IN_PROGRESS.value:
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT id, data FROM jobs WHERE status = ?", (JobStatus.IN_PROGRESS.value,))
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                job_id = row['id']
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                
                 try:
                     last_activity = datetime.fromisoformat(job.last_activity or job.updated_at)
                     elapsed = (now - last_activity).total_seconds()
                     if elapsed > stall_timeout_seconds:
                         if self.mark_job_stalled(job_id):
                             stalled_jobs.append(job_id)
-                            print(f"⏸️ Job {job_id} marked as stalled (no activity for {elapsed:.0f}s)")
+                            logger.info(f"⏸️ Job {job_id} marked as stalled (no activity for {elapsed:.0f}s)")
                 except Exception as e:
-                    print(f"Error checking job {job_id} for stall: {e}")
+                    logger.warning(f"Error checking job {job_id} for stall: {e}")
         
         return stalled_jobs
     
@@ -342,85 +529,175 @@ class JobManager:
     
     def can_auto_retry(self, job_id: str) -> bool:
         """Check if a stalled job can be auto-retried."""
-        if job_id in self._jobs:
-            job = self._jobs[job_id]
-            return (
-                job.status == JobStatus.STALLED.value and 
-                job.checkpoint is not None and
-                job.retry_count < self.MAX_AUTO_RETRIES
-            )
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                return (
+                    job.status == JobStatus.STALLED.value and 
+                    job.checkpoint is not None and
+                    job.retry_count < self.MAX_AUTO_RETRIES
+                )
         return False
     
     def increment_retry_count(self, job_id: str) -> int:
         """Increment retry count for a job and return the new count."""
-        if job_id in self._jobs:
-            self._jobs[job_id].retry_count += 1
-            self._save_jobs()
-            return self._jobs[job_id].retry_count
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                
+                job.retry_count += 1
+                cursor.execute(
+                    "UPDATE jobs SET data = ? WHERE id = ?",
+                    (json.dumps(job.to_dict()), job_id)
+                )
+                return job.retry_count
         return 0
     
     def reset_retry_count(self, job_id: str):
         """Reset retry count (called on successful completion)."""
-        if job_id in self._jobs:
-            self._jobs[job_id].retry_count = 0
-            self._save_jobs()
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                
+                job.retry_count = 0
+                cursor.execute(
+                    "UPDATE jobs SET data = ? WHERE id = ?",
+                    (json.dumps(job.to_dict()), job_id)
+                )
     
     def get_jobs_needing_auto_retry(self) -> List[str]:
         """Get list of stalled job IDs that can be auto-retried."""
-        return [
-            job_id for job_id, job in self._jobs.items()
-            if self.can_auto_retry(job_id)
-        ]
+        # This iterates all jobs which is inefficient, but okay for MVP. 
+        # Better: SELECT id FROM jobs WHERE status='stalled' AND retry_count < MAX
+        # but retry_count is in JSON blob only (unless I add column).
+        # For now, fetch all stalled jobs and check.
+        jobs_to_retry = []
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT id, data FROM jobs WHERE status = ?", (JobStatus.STALLED.value,))
+            rows = cursor.fetchall()
+            for row in rows:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                if job.checkpoint and job.retry_count < self.MAX_AUTO_RETRIES:
+                    jobs_to_retry.append(job.job_id)
+        return jobs_to_retry
     
     def prepare_job_for_resume(self, job_id: str) -> bool:
         """Prepare a stalled job for resumption."""
-        if job_id in self._jobs:
-            job = self._jobs[job_id]
-            if job.status == JobStatus.STALLED.value and job.checkpoint:
-                job.status = JobStatus.PENDING.value
-                job.progress = "🔄 Ready to resume..."
-                job.updated_at = datetime.now().isoformat()
-                self._save_jobs()
-                return True
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                
+                if job.status == JobStatus.STALLED.value and job.checkpoint:
+                    job.status = JobStatus.PENDING.value
+                    job.progress = "🔄 Ready to resume..."
+                    job.updated_at = datetime.now().isoformat()
+                    
+                    cursor.execute(
+                        "UPDATE jobs SET status = ?, progress = ?, updated_at = ?, data = ? WHERE id = ?",
+                        (job.status, job.progress, job.updated_at, json.dumps(job.to_dict()), job_id)
+                    )
+                    return True
         return False
     
     def complete_job(self, job_id: str, output_file: str):
         """Mark a job as completed with the output file path."""
-        if job_id in self._jobs:
-            self._jobs[job_id].status = JobStatus.COMPLETED.value
-            self._jobs[job_id].output_file = output_file
-            self._jobs[job_id].progress = "✅ Completed"
-            self._jobs[job_id].updated_at = datetime.now().isoformat()
-            self._save_jobs()
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                
+                job.status = JobStatus.COMPLETED.value
+                job.output_file = output_file
+                job.progress = "✅ Completed"
+                job.percent_complete = 100.0
+                job.updated_at = datetime.now().isoformat()
+                
+                cursor.execute(
+                    """
+                    UPDATE jobs 
+                    SET status = ?, percent_complete = ?, updated_at = ?, data = ? 
+                    WHERE id = ?
+                    """,
+                    (job.status, job.percent_complete, job.updated_at, json.dumps(job.to_dict()), job_id)
+                )
     
     def fail_job(self, job_id: str, error_message: str):
         """Mark a job as failed with an error message."""
-        if job_id in self._jobs:
-            self._jobs[job_id].status = JobStatus.FAILED.value
-            self._jobs[job_id].error_message = error_message
-            self._jobs[job_id].progress = f"❌ Failed: {error_message}"
-            self._jobs[job_id].updated_at = datetime.now().isoformat()
-            self._save_jobs()
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                job_data = json.loads(row['data'])
+                job = Job.from_dict(job_data)
+                
+                job.status = JobStatus.FAILED.value
+                job.error_message = error_message
+                job.progress = f"❌ Failed: {error_message}"
+                job.updated_at = datetime.now().isoformat()
+                
+                cursor.execute(
+                    "UPDATE jobs SET status = ?, progress = ?, updated_at = ?, data = ? WHERE id = ?",
+                    (job.status, job.progress, job.updated_at, json.dumps(job.to_dict()), job_id)
+                )
     
     def get_job(self, job_id: str) -> Optional[Job]:
         """Get a job by ID."""
         self._cleanup_expired_jobs()
-        return self._jobs.get(job_id)
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+            row = cursor.fetchone()
+            if row:
+                try:
+                    return Job.from_dict(json.loads(row['data']))
+                except Exception as e:
+                    logger.error(f"Error parsing job data for {job_id}: {e}")
+        return None
     
     def get_all_jobs(self) -> List[Job]:
         """Get all non-expired jobs, sorted by creation time (newest first)."""
         self._cleanup_expired_jobs()
-        jobs = list(self._jobs.values())
-        jobs.sort(key=lambda j: j.created_at, reverse=True)
+        jobs = []
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT data FROM jobs ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+            for row in rows:
+                try:
+                    jobs.append(Job.from_dict(json.loads(row['data'])))
+                except Exception:
+                    pass
         return jobs
     
     def delete_job(self, job_id: str) -> bool:
         """Delete a job and its associated files."""
-        if job_id in self._jobs:
-            self._remove_job_files(job_id)
-            del self._jobs[job_id]
-            self._save_jobs()
-            return True
+        # Fetch job data first to remove files
+        with db.get_cursor() as cursor:
+             cursor.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+             row = cursor.fetchone()
+             if row:
+                 try:
+                     job_data = json.loads(row['data'])
+                     self._remove_job_files(job_id, job_data)
+                 except Exception:
+                     # Even if parsing fails, delete from DB
+                     self._remove_job_files(job_id)
+                 
+                 cursor.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+                 return True
         return False
     
     def get_job_summary(self) -> str:
@@ -445,8 +722,8 @@ class JobManager:
                 remaining = expires_at - datetime.now()
                 hours_remaining = max(0, remaining.total_seconds() / 3600)
                 time_str = f"{hours_remaining:.1f}h remaining"
-            except:
-                time_str = "Unknown"
+            except ValueError:
+                time_str = "?"
             
             lines.append(
                 f"{status_emoji} **{job.book_title}** (ID: `{job.job_id}`)\n"
@@ -596,9 +873,12 @@ class AutoResumeService:
         """
         stalled_job_ids = []
         
-        for job_id, job in job_manager._jobs.items():
-            # Jobs that were in-progress when the server stopped should be marked as stalled
-            if job.status == JobStatus.IN_PROGRESS.value:
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT id FROM jobs WHERE status = ?", (JobStatus.IN_PROGRESS.value,))
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                job_id = row['id']
                 if job_manager.mark_job_stalled(job_id):
                     stalled_job_ids.append(job_id)
                     print(f"⏸️ Startup: Marked job {job_id} as stalled (was in-progress)")
@@ -626,14 +906,14 @@ def format_job_for_table(job: Job) -> List[Any]:
         remaining = expires_at - datetime.now()
         hours_remaining = max(0, remaining.total_seconds() / 3600)
         time_str = f"{hours_remaining:.1f}h"
-    except:
+    except ValueError:
         time_str = "?"
     
     # Format created time
     try:
         created = datetime.fromisoformat(job.created_at)
         created_str = created.strftime("%m/%d %H:%M")
-    except:
+    except ValueError:
         created_str = "?"
     
     return [

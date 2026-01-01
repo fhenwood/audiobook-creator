@@ -19,11 +19,9 @@ import os
 import asyncio
 from audiobook.utils.emotion_processing import add_tags_to_text_chunks, process_emotion_tags_for_jsonl_data
 from audiobook.utils.file_utils import read_jsonl
-from dotenv import load_dotenv
+from audiobook.config import settings
 
-load_dotenv()
-
-TTS_MODEL = os.environ.get("TTS_MODEL", "orpheus")
+TTS_MODEL = settings.default_tts_engine
 
 async def process_emotion_tags(characters_identified):
     """

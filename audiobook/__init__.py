@@ -16,7 +16,7 @@ from audiobook.core.character_identification import (
     process_book_and_identify_characters,
 )
 from audiobook.tts.generator import (
-    process_audiobook_generation,
+
     validate_book_for_m4b_generation,
     sanitize_filename,
 )
@@ -33,7 +33,7 @@ __all__ = [
     "process_emotion_tags",
     "identify_characters_and_output_book_to_jsonl",
     "process_book_and_identify_characters",
-    "process_audiobook_generation",
+
     "validate_book_for_m4b_generation",
     "sanitize_filename",
     "get_available_voices",

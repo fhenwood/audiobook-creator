@@ -87,7 +87,6 @@ services:
     volumes:
       - .:/app
       - orpheus_snac_models:/root/.cache/huggingface
-      - chatterbox_models:/root/.cache/chatterbox
       # Persist temp audio files for job resume capability
       - audiobook_temp_audio:/app/temp_audio
       # Mount docker socket for GPU resource management (start/stop LLM containers on-demand)
@@ -117,6 +116,13 @@ services:
       llm_server:
         condition: service_started
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
 
   # llama.cpp server for Orpheus TTS token generation
   orpheus_llama:
@@ -131,6 +137,13 @@ services:
       model_downloader:
         condition: service_completed_successfully
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
 
   # llama.cpp server for LLM (character extraction, emotion tags)
   llm_server:
@@ -145,12 +158,18 @@ services:
       model_downloader:
         condition: service_completed_successfully
     restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
 
 volumes:
   orpheus_snac_models:
   orpheus_gguf_models:
   llm_models:
-  chatterbox_models:
   audiobook_output:
   audiobook_temp_audio:
   vibevoice_models:

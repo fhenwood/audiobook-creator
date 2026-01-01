@@ -21,26 +21,26 @@ import asyncio
 import traceback
 from tqdm.asyncio import tqdm_asyncio # Use tqdm's async version for better updates
 from openai import AsyncOpenAI
-from dotenv import load_dotenv
+
 from audiobook.utils.llm_utils import check_if_have_to_include_no_think_token, clean_thinking_tags
 import tiktoken
 import httpx
 
-load_dotenv()
+from audiobook.config import settings
 
 # Unified LLM configuration (used for both character identification and emotion tags)
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "not-needed")
-LLM_MODEL_NAME = os.environ.get("LLM_MODEL_NAME", "gpt-oss-20b")
-NO_THINK_MODE = os.environ.get("NO_THINK_MODE", "true")
-LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE = int(os.environ.get("LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE", 1))
-MAX_INPUT_TOKENS = int(os.environ.get("MAX_INPUT_TOKENS", "500"))  # Max tokens per chunk for emotion processing
-EMOTION_CONTEXT_WINDOW_SIZE = int(os.environ.get("EMOTION_CONTEXT_WINDOW_SIZE", "2"))  # Number of lines before/after emotion keyword
+LLM_BASE_URL = settings.llm_base_url
+LLM_API_KEY = settings.llm_api_key
+LLM_MODEL_NAME = settings.llm_model_name
+NO_THINK_MODE = settings.no_think_mode
+LLM_MAX_PARALLEL_REQUESTS_BATCH_SIZE = settings.llm_max_parallel_requests_batch_size
+MAX_INPUT_TOKENS = settings.max_input_tokens
+EMOTION_CONTEXT_WINDOW_SIZE = settings.emotion_context_window_size
 
 # Timeout and retry configuration for LLM calls
-LLM_REQUEST_TIMEOUT = int(os.environ.get("LLM_REQUEST_TIMEOUT", "120"))  # Timeout per request in seconds
-LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))  # Max retries per chunk
-LLM_RETRY_DELAY = float(os.environ.get("LLM_RETRY_DELAY", "2.0"))  # Base delay between retries
+LLM_REQUEST_TIMEOUT = settings.llm_request_timeout
+LLM_MAX_RETRIES = settings.llm_max_retries
+LLM_RETRY_DELAY = settings.llm_retry_delay
 
 _TOKENIZER = None
 

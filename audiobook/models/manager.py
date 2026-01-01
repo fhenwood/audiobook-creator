@@ -17,13 +17,15 @@ from huggingface_hub import snapshot_download, scan_cache_dir
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-MODELS_DIR = os.getenv("MODELS_DIR", "/app/models")
+from audiobook.config import settings
+
 
 class ModelType(str, Enum):
     TTS = "tts"
     LLM = "llm"
     TRANSCRIBE = "transcribe"
     VOICE_CONVERSION = "vc"
+    VOICE_ANALYZER = "voice-analyzer"
 
 class ModelDefinition(BaseModel):
     """Static definition of a supported model."""
@@ -51,6 +53,24 @@ class ModelStatus(BaseModel):
 
 SUPPORTED_MODELS: Dict[str, ModelDefinition] = {
     # TTS Models
+    "maya-1": ModelDefinition(
+        id="maya-1",
+        name="Maya1",
+        type=ModelType.TTS,
+        description="State-of-the-art expressive TTS (3B parameters)",
+        source_repo="maya-research/Maya1",
+        size_estimate_gb=7.0,
+        required_ram_gb=8.0
+    ),
+    "voice-analyzer-qwen": ModelDefinition(
+        id="voice-analyzer-qwen",
+        name="Qwen2-Audio 7B",
+        type=ModelType.VOICE_ANALYZER,
+        description="Voice Analysis and Description (7B parameters)",
+        source_repo="Qwen/Qwen2-Audio-7B-Instruct",
+        size_estimate_gb=15.0,
+        required_ram_gb=16.0
+    ),
     "vibevoice-7b": ModelDefinition(
         id="vibevoice-7b",
         name="VibeVoice 7B",
@@ -88,6 +108,30 @@ SUPPORTED_MODELS: Dict[str, ModelDefinition] = {
         required_ram_gb=6.0
     ),
     
+    "orpheus-3b-0.1-ft-Q8_0.gguf": ModelDefinition(
+        id="orpheus-3b-0.1-ft-Q8_0.gguf",
+        name="Orpheus 3B (Q8_0)",
+        type=ModelType.TTS,
+        description="Orpheus 3B TTS Model (Q8_0 GGUF) - High Quality",
+        source_repo="unsloth/orpheus-3b-0.1-ft-GGUF",
+        files=["orpheus-3b-0.1-ft-Q8_0.gguf"],
+        default_filename="orpheus-3b-0.1-ft-Q8_0.gguf",
+        size_estimate_gb=3.5,
+        required_ram_gb=4.0
+    ),
+
+    "orpheus-3b-0.1-ft-Q4_K_M.gguf": ModelDefinition(
+        id="orpheus-3b-0.1-ft-Q4_K_M.gguf",
+        name="Orpheus 3B (Q4_K_M)",
+        type=ModelType.TTS,
+        description="Orpheus 3B TTS Model (Q4 GGUF) - Efficient",
+        source_repo="unsloth/orpheus-3b-0.1-ft-GGUF",
+        files=["orpheus-3b-0.1-ft-Q4_K_M.gguf"],
+        default_filename="orpheus-3b-0.1-ft-Q4_K_M.gguf",
+        size_estimate_gb=2.1,
+        required_ram_gb=3.0
+    ),
+
     # LLM Models (GGUF for efficiency)
     "gpt-oss-20b-gguf": ModelDefinition(
         id="gpt-oss-20b-gguf",
@@ -147,7 +191,7 @@ SUPPORTED_MODELS: Dict[str, ModelDefinition] = {
 
 class ModelManager:
     def __init__(self):
-        self.base_dir = MODELS_DIR
+        self.base_dir = settings.models_dir
         os.makedirs(self.base_dir, exist_ok=True)
     
     def list_models(self) -> List[ModelStatus]:

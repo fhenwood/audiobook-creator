@@ -27,14 +27,14 @@ import warnings
 from audiobook.utils.file_utils import empty_file
 from audiobook.utils.llm_utils import check_if_llm_is_up
 from audiobook.utils.character_llm import llm_identify_characters_and_output_to_jsonl
-from dotenv import load_dotenv
 
-load_dotenv()
+
+from audiobook.config import settings
 
 # Unified LLM configuration (used for both character identification and emotion tags)
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:8000/v1")
-LLM_API_KEY = os.environ.get("LLM_API_KEY", "not-needed")
-LLM_MODEL_NAME = os.environ.get("LLM_MODEL_NAME", "gpt-oss-20b")
+LLM_BASE_URL = settings.llm_base_url
+LLM_API_KEY = settings.llm_api_key
+LLM_MODEL_NAME = settings.llm_model_name
 
 async_openai_client = AsyncOpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
 model_name = LLM_MODEL_NAME

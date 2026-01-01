@@ -27,10 +27,16 @@ from audiobook.utils.shell_commands import run_shell_command_secure, validate_fi
 # Escape double quotes by replacing them with \"
 def escape_metadata(value):
     if value:
-        # Remove any potentially dangerous characters for metadata
-        # Keep only alphanumeric, spaces, common punctuation
-        safe_chars = re.sub(r'[^\w\s\-.,!?\'"()[\]:;]', '', str(value))
-        return safe_chars.replace('"', '\\"')  # Escape double quotes
+        # 1. Normalize curly apostrophes and quotes to standard ASCII
+        val_str = str(value).replace('’', "'").replace('‘', "'").replace('“', '"').replace('”', '"')
+        
+        # 2. Keep more safe characters including +, ; and &
+        # We strip characters that could be high-risk even in list-based calls (like | < >)
+        # but allow common metadata symbols.
+        safe_chars = re.sub(r'[^\w\s\-.,!?\'"()[\]:;&+=]', '', val_str)
+        
+        # 3. Escape double quotes for FFmpeg command line compatibility
+        return safe_chars.replace('"', '\\"')
     return ""
 
 def validate_file_path(file_path):
@@ -513,7 +519,11 @@ def merge_chapters_to_m4b(book_path, chapter_files, temp_audio_dir="temp_audio")
     if not validate_file_path(book_path):
         raise ValueError(f"Invalid or unsafe book path: {book_path}")
         
-    file_list_path = "chapter_list.txt"
+    if not chapter_files:
+        raise ValueError("No chapter files provided to merge. Audiobook generation failed to produce any chapters.")
+
+    # Use job-specific temp directory to avoid race conditions
+    file_list_path = os.path.join(temp_audio_dir, "chapter_list.txt")
     
     with open(file_list_path, "w", encoding='utf-8') as f:
         for chapter in chapter_files:
@@ -521,7 +531,12 @@ def merge_chapters_to_m4b(book_path, chapter_files, temp_audio_dir="temp_audio")
             chapter_path = os.path.join(temp_audio_dir, chapter)
             if not validate_file_path(chapter_path):
                 raise ValueError(f"Invalid chapter file: {chapter}")
-            f.write(f"file '{chapter_path}'\n")
+            
+            # FFmpeg concat demuxer requires escaping single quotes in paths
+            # The format is: file 'path/with/escaped\'/quotes'
+            abs_path = os.path.abspath(chapter_path)
+            escaped_path = abs_path.replace("'", "'\\''")
+            f.write(f"file '{escaped_path}'\n")
 
     metadata = get_ebook_metadata_with_cover(book_path)
     title = escape_metadata(metadata.get("Title", ""))
@@ -674,7 +689,11 @@ def merge_chapters_to_standard_audio_file(chapter_files, temp_audio_dir="temp_au
             # Validate each chapter file
             if not validate_file_path(chapter_path):
                 raise ValueError(f"Invalid chapter file: {chapter}")
-            f.write(f"file '{chapter_path}'\n")
+            
+            # Use absolute and escaped paths for FFmpeg
+            abs_path = os.path.abspath(chapter_path)
+            escaped_path = abs_path.replace("'", "'\\''")
+            f.write(f"file '{escaped_path}'\n")
 
     # Construct the output file path
     output_file = "generated_audiobooks/audiobook.m4a"

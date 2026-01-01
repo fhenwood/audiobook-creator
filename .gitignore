@@ -57,5 +57,5 @@ htmlcov/
 docs/*
 *.pt
 static_files/voices/*
-models/
+/models/
 checkpoints/

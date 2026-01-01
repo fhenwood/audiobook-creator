@@ -21,6 +21,7 @@ from audiobook.tts.engines.base import (
 )
 from audiobook.tts.engines.registry import register_engine
 from audiobook.models.manager import model_manager
+from audiobook.config import settings
 
 
 # Orpheus voice definitions with metadata
@@ -84,7 +85,7 @@ ORPHEUS_VOICES = [
 ]
 
 # Model config
-DEFAULT_MODEL_ID = "orpheus-3b"
+DEFAULT_MODEL_ID = "orpheus-3b-0.1-ft-Q4_K_M.gguf"
 SAMPLE_RATE = 24000
 
 
@@ -119,9 +120,9 @@ class OrpheusEngine(TTSEngine):
             config.model_name if config and config.model_name
             else DEFAULT_MODEL_ID
         )
-        self.temperature = float(os.environ.get("ORPHEUS_TEMPERATURE", "0.6"))
-        self.top_p = float(os.environ.get("ORPHEUS_TOP_P", "0.9"))
-        self.max_tokens = int(os.environ.get("ORPHEUS_MAX_TOKENS", "8192"))
+        self.temperature = settings.orpheus_temperature
+        self.top_p = settings.orpheus_top_p
+        self.max_tokens = settings.orpheus_max_tokens
         self.repetition_penalty = 1.1
         
         self._llm = None
@@ -143,6 +144,19 @@ class OrpheusEngine(TTSEngine):
                     return False
             
             print(f"🚀 Loading {self.display_name} from {model_path}...")
+
+            # If model_path is a directory, find the GGUF file inside
+            if os.path.isdir(model_path):
+                found_gguf = False
+                for file in os.listdir(model_path):
+                    if file.endswith(".gguf"):
+                        model_path = os.path.join(model_path, file)
+                        found_gguf = True
+                        break
+                if not found_gguf:
+                     print(f"❌ No GGUF file found in {model_path}")
+                     return False
+
             
             # Load model using llama-cpp-python
             try:
@@ -159,8 +173,9 @@ class OrpheusEngine(TTSEngine):
                 )
                 print(f"✅ LLM loaded with {n_gpu_layers} GPU layers")
             except ImportError:
-                print("⚠️ llama-cpp-python not available, falling back to API mode")
-                return await self._initialize_api_fallback()
+                print("❌ llama-cpp-python not available. In-process execution requires this package.")
+                print("   Install it with: pip install llama-cpp-python")
+                return False
             
             # Load SNAC audio decoder
             try:
@@ -183,19 +198,6 @@ class OrpheusEngine(TTSEngine):
             traceback.print_exc()
             return False
     
-    async def _initialize_api_fallback(self) -> bool:
-        """Fallback to API mode if llama-cpp-python not available."""
-        from openai import AsyncOpenAI
-        
-        api_url = os.getenv("TTS_BASE_URL", "http://localhost:8880/v1")
-        api_key = os.getenv("TTS_API_KEY", "not-needed")
-        
-        self._client = AsyncOpenAI(base_url=api_url, api_key=api_key)
-        self._use_api = True
-        self._initialized = True
-        print(f"✅ {self.display_name} initialized (API fallback at {api_url})")
-        return True
-    
     async def shutdown(self) -> None:
         """Shutdown the engine and release GPU resources."""
         import torch
@@ -207,10 +209,6 @@ class OrpheusEngine(TTSEngine):
         if self._snac:
             del self._snac
             self._snac = None
-        
-        if hasattr(self, '_client') and self._client:
-            await self._client.close()
-            self._client = None
         
         gc.collect()
         if torch.cuda.is_available():
@@ -255,39 +253,8 @@ class OrpheusEngine(TTSEngine):
         if emotion:
             formatted_text = f"<{emotion}>{text}"
         
-        # Use API fallback if no local model
-        if hasattr(self, '_use_api') and self._use_api:
-            return await self._generate_via_api(formatted_text, voice, speed)
-        
         # Generate using local LLM + SNAC
         return await self._generate_local(formatted_text, voice, speed)
-    
-    async def _generate_via_api(
-        self, 
-        text: str, 
-        voice: str, 
-        speed: float
-    ) -> GenerationResult:
-        """Generate using external API (fallback mode)."""
-        audio_buffer = bytearray()
-        
-        async with self._client.audio.speech.with_streaming_response.create(
-            model="orpheus",
-            voice=voice,
-            response_format="wav",
-            speed=speed,
-            input=text,
-            timeout=600
-        ) as response:
-            async for chunk in response.iter_bytes():
-                audio_buffer.extend(chunk)
-        
-        return GenerationResult(
-            audio_data=bytes(audio_buffer),
-            sample_rate=SAMPLE_RATE,
-            voice_id=voice,
-            metadata={"engine": self.name, "mode": "api"}
-        )
     
     async def _generate_local(
         self, 

@@ -94,3 +94,57 @@ def get_dialogue_voice(narrator_gender: str = "female"):
     """
     _, dialogue_voice = get_narrator_and_dialogue_voices("orpheus", narrator_gender)
     return dialogue_voice 
+
+
+def get_narrator_voice_for_character(engine_name: str, narrator_gender: str) -> str:
+    """
+    Get the narrator voice for a character based on engine and gender.
+    
+    Args:
+        engine_name (str): TTS engine name (e.g., "orpheus")
+        narrator_gender (str): Gender of narrator ("male" or "female")
+    
+    Returns:
+        str: Voice identifier for narrator
+    """
+    narrator_voice, _ = get_narrator_and_dialogue_voices(engine_name, narrator_gender)
+    return narrator_voice
+
+
+def get_voice_for_character_score(engine_name: str, narrator_gender: str, gender_score: int) -> str:
+    """
+    Get voice for a character based on their gender score.
+    
+    Gender score ranges from 0-10:
+    - 0-3: Strong female voice
+    - 4-6: Neutral/narrator voice  
+    - 7-10: Strong male voice
+    
+    Args:
+        engine_name (str): TTS engine name (e.g., "orpheus")
+        narrator_gender (str): Gender of narrator ("male" or "female")
+        gender_score (int): Character's gender score (0-10)
+    
+    Returns:
+        str: Voice identifier matching the character's gender profile
+    """
+    voice_mappings = load_voice_mappings()
+    engine_voices = voice_mappings.get(engine_name, voice_mappings.get("orpheus", {}))
+    
+    # Get score-to-voice mapping or use defaults
+    if narrator_gender == "male":
+        score_map = engine_voices.get("male_score_map", {
+            "0": "leah", "1": "leah", "2": "jess", "3": "mia",
+            "4": "zoe", "5": "zac", "6": "zac",
+            "7": "dan", "8": "dan", "9": "leo", "10": "leo"
+        })
+    else:
+        score_map = engine_voices.get("female_score_map", {
+            "0": "leah", "1": "leah", "2": "jess", "3": "mia",
+            "4": "tara", "5": "tara", "6": "zoe",
+            "7": "dan", "8": "dan", "9": "leo", "10": "leo"
+        })
+    
+    # Clamp score to valid range
+    score = max(0, min(10, gender_score))
+    return score_map.get(str(score), "zac" if narrator_gender == "male" else "tara")

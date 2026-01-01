@@ -50,14 +50,14 @@ def get_installed_tts_engines():
     
     # Orpheus is the core engine, assumed available via container services
     engines.append("Orpheus")
-    
-    # Chatterbox requires XTTS v2
-    if model_manager.get_model_path("xtts-v2"):
-        engines.append("Chatterbox")
         
     # VibeVoice requires vibevoice-7b
     if model_manager.get_model_path("vibevoice-7b"):
         engines.append("VibeVoice")
+
+    # Maya1
+    if model_manager.get_model_path("maya-1"):
+        engines.append("Maya")
         
     if not engines:
         engines.append("(No Engines Installed)")
